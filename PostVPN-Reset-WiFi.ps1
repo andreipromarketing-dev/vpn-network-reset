@@ -100,6 +100,7 @@ try {
 Start-Sleep -Seconds 3
 
 Write-Status "[2] Enabling Wi-Fi adapter..." "info"
+Write-Status "Waiting for reconnection (this may take 15-30 seconds)..." "info"
 try {
     Enable-NetAdapter -Name $wifi.Name -Confirm:$false -ErrorAction Stop
 } catch {
@@ -107,7 +108,7 @@ try {
     netsh interface set interface "$($wifi.Name)" admin=enabled 2>$null
 }
 
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 20
 
 Write-Status "[3] Re-configuring DNS..." "info"
 try {

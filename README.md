@@ -2,9 +2,14 @@
 
 Автоматический сброс сети после VPN (ChatVPN и др.) без перезагрузки компьютера.
 
-![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?style=flat-square)
-![Windows](https://img.shields.io/badge/Windows-10/11-green?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
+[![Stars](https://img.shields.io/github/stars/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/stargazers)
+[![Forks](https://img.shields.io/github/forks/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/network/members)
+[![Watchers](https://img.shields.io/github/watchers/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/watchers)
+[![Download](https://img.shields.io/badge/Download-v1.1.0-blue?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/releases/tag/v1.1.0)
+
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?style=flat-square)](https://github.com/PowerShell/PowerShell)
+[![Windows](https://img.shields.io/badge/Windows-10/11-green?style=flat-square)](https://www.microsoft.com/windows)
+[![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 ---
 
@@ -12,13 +17,13 @@
 
 После использования VPN (особенно ChatVPN) Windows часто показывает "DNS-сервер недоступен" и не предлагает решений.
 
-Этот скрипт автоматически:
-1. Диагностирует проблему
-2. Выполняет лёгкий сброс сети
-3. Если не помогло — усиленный сброс
-4. Устанавливает стабильные DNS (Google + Cloudflare)
+Этот скрипт безопасно:
+1. Очищает DNS-кэш
+2. Переподключает Wi-Fi адаптер
+3. Устанавливает стабильные DNS серверы
+4. **Не затрагивает Bluetooth** (защита от отключения мышек/наушников)
 
-**Результат:** интернет работает без перезагрузки и переключения на чужие сети.
+**Результат:** интернет работает без перезагрузки.
 
 ---
 
@@ -26,7 +31,7 @@
 
 ### Вариант 1: Ярлык на рабочем столе (рекомендуется)
 
-1. Скачайте файл `Сброс_сети_после_VPN.bat`
+1. Скачайте файл `Reset-Network.bat`
 2. Кликните правой кнопкой → "Создать ярлык"
 3. Перенесите ярлык на рабочий стол
 4. Готово! Клик = сброс сети
@@ -43,24 +48,23 @@
 
 ```
 [PRE] Checking network...
-[1] Light reset...        ← Сброс DNS + переподключение Wi-Fi
+[1] Safe DNS & IP Reset     ← DNS flush + IP renew
    ↓ Если не помогло
-[2] Hard reset...         ← Полный сброс TCP/IP + службы
+[2] Adapter Reset           ← Disable/Enable Wi-Fi only
    ↓ Если не помогло
-[FAILED]                  ← Рекомендации пользователю
+[FAILED]                    ← Рекомендации пользователю
 ```
 
-### Light Reset (Попытка 1)
+### Шаг 1: Безопасный сброс
 - `ipconfig /flushdns` — очистка DNS-кэша
 - `ipconfig /release` + `/renew` — обновление IP
-- Отключение/включение Wi-Fi адаптера
-- `netsh winsock reset` — сброс Winsock
+- Установка DNS 8.8.8.8 + 1.1.1.1
+- Очистка ARP-кэша
 
-### Hard Reset (Попытка 2)
-- `netsh int ip reset` — полный сброс TCP/IP
-- `netsh int tcp reset` — сброс TCP-стека
-- Перезапуск всех сетевых служб
-- Принудительная установка DNS 8.8.8.8 + 1.1.1.1
+### Шаг 2: Сброс адаптера
+- Отключение Wi-Fi адаптера
+- Включение Wi-Fi адаптера
+- Перенастройка DNS
 
 ---
 
@@ -69,9 +73,9 @@
 | Проблема | Решение |
 |----------|---------|
 | DNS-сервер недоступен после VPN | Автоматический сброс DNS |
-| VPN "ломает" сетевой стек | Полный сброс TCP/IP |
+| VPN "ломает" интернет | Безопасное переподключение |
 | Не хочется перезагружать ПК | Работает без перезагрузки |
-| Не хочется переключаться на чужие сети | Сброс своих адаптеров |
+| Bluetooth отключается при сбросе | Защита от этого ✓ |
 
 ---
 
@@ -79,48 +83,23 @@
 
 - Windows 10/11
 - PowerShell 5.1+
-- Права администратора (скрипт запрашивает при необходимости)
-- Wi-Fi адаптер (для автоматического определения)
+- Права администратора
+- Wi-Fi адаптер
 
 ---
 
-## 🔧 Настройка
+## ⚠️ Важно
 
-### Изменить имя Wi-Fi адаптера
-
-Если ваш адаптер называется не "Wi-Fi", измените строку 14:
-
-```powershell
-function Get-WiFi {
-    Get-NetAdapter | Where-Object { $_.Name -like "*ВАШЕ ИМЯ*" } | Select-Object -First 1
-}
-```
-
-### Добавить автоматический запуск
-
-Можно настроить планировщик задач для автоматического сброса после закрытия VPN.
-
----
-
-## 📝 Логирование
-
-Скрипт выводит информацию в консоль. Для тихого режима измените `.bat` файл:
-
-```bat
-powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Scripts\PostVPN-Reset-WiFi.ps1"
-```
+- Скрипт **НЕ перезапускает системные службы** массово
+- Скрипт **НЕ отключает все адаптеры** — только Wi-Fi
+- Скрипт **НЕ затрагивает Bluetooth** устройства
+- Адаптеры Bluetooth часто совмещены с Wi-Fi на ноутбуках
 
 ---
 
 ## 🤝 Вклад
 
 Форки и Pull Request'ы приветствуются!
-
-1. Forkните репозиторий
-2. Создайте ветку (`git checkout -b feature/AmazingFeature`)
-3. Commit (`git commit -m 'Add AmazingFeature'`)
-4. Push (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
 
 ---
 

@@ -1,5 +1,3 @@
-# vpn-network-reset
-Auto-reset network after VPN without restart
 # 🔄 VPN Network Reset
 
 Автоматический сброс сети после VPN (ChatVPN и др.) без перезагрузки компьютера.
@@ -12,7 +10,7 @@ Auto-reset network after VPN without restart
 
 ## 📖 Описание
 
-После использования VPN (в частности ChatVPN) Windows часто показывает "DNS-сервер недоступен" и не предлагает решений.
+После использования VPN (особенно ChatVPN) Windows часто показывает "DNS-сервер недоступен" и не предлагает решений.
 
 Этот скрипт автоматически:
 1. Диагностирует проблему

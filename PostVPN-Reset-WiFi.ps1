@@ -1,7 +1,12 @@
 $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PresetFile = Join-Path $ScriptDir "presets\working-preset.json"
+$SnapshotsDir = Join-Path $ScriptDir "snapshots"
+$LastSnapshot = Join-Path $SnapshotsDir "last-known-good.json"
 $LogFile = Join-Path $ScriptDir "reset.log"
+
+if (-not (Test-Path $SnapshotsDir)) {
+    New-Item -ItemType Directory -Path $SnapshotsDir | Out-Null
+}
 
 function Write-Log($msg) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -52,29 +57,36 @@ function Get-CurrentConfig {
     return $cfg
 }
 
-function Save-CurrentPreset {
-    param([string]$Adapter)
-    $preset = @{
-        name = "Auto-saved preset"
-        saved = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
-        adapter = $Adapter
-        network = @{}
+function Save-NetworkSnapshot {
+    $snapshot = @{
+        timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        adapter = $adapter
+        ssid = ""
+        bssid = ""
+        ip = ""
+        gateway = ""
+        dns = @()
     }
     try {
         $wlanInfo = netsh wlan show interfaces | Out-String
-        if ($wlanInfo -match "SSID.*?:\s*(.+)" ) { $preset.network.ssid = $matches[1].Trim() }
-        if ($wlanInfo -match "BSSID.*?:\s*(.+)" ) { $preset.network.bssid = $matches[1].Trim() }
+        if ($wlanInfo -match "SSID.*?:\s*(.+)" ) { $snapshot.ssid = $matches[1].Trim() }
+        if ($wlanInfo -match "BSSID.*?:\s*(.+)" ) { $snapshot.bssid = $matches[1].Trim() }
         
         $ipConfig = ipconfig | Out-String
-        if ($ipConfig -match "IPv4.*?(\d+\.\d+\.\d+\.\d+)") { $preset.network.ip = $matches[1] }
-        if ($ipConfig -match "Основной шлюз.*?(\d+\.\d+\.\d+\.\d+)") { $preset.network.gateway = $matches[1] }
+        if ($ipConfig -match "IPv4.*?(\d+\.\d+\.\d+\.\d+)") { $snapshot.ip = $matches[1] }
+        if ($ipConfig -match "Основной шлюз.*?(\d+\.\d+\.\d+\.\d+)") { $snapshot.gateway = $matches[1] }
         
-        $presetJson = $preset | ConvertTo-Json -Depth 3
-        $presetJson | Out-File -FilePath $PresetFile -Encoding UTF8
-        Write-Status "Preset saved: $PresetFile" "info"
-    } catch {
-        Write-Status "Failed to save preset: $_" "warning"
-    }
+        $dnsMatch = [regex]::Matches($ipConfig, "DNS.*?(\d+\.\d+\.\d+\.\d+)")
+        foreach ($m in $dnsMatch) { $snapshot.dns += $m.Groups[1].Value }
+        $snapshot.dns = $snapshot.dns | Select-Object -Unique
+    } catch {}
+    
+    $snapshot | ConvertTo-Json -Depth 3 | Out-File -FilePath $LastSnapshot -Encoding UTF8
+    Write-Status "Snapshot saved: $LastSnapshot" "info"
+    
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupFile = Join-Path $SnapshotsDir "snapshot-$timestamp.json"
+    $snapshot | ConvertTo-Json -Depth 3 | Out-File -FilePath $backupFile -Encoding UTF8
 }
 
 Write-Host ""
@@ -129,8 +141,8 @@ netsh winhttp reset proxy 2>$null
 [Environment]::SetEnvironmentVariable("HTTP_PROXY", $null, "User")
 [Environment]::SetEnvironmentVariable("HTTPS_PROXY", $null, "User")
 
-Write-Status "[6/6] Saving current working preset..." "info"
-Save-CurrentPreset -Adapter $adapter
+Write-Status "[6/6] Saving network snapshot..." "info"
+Save-NetworkSnapshot
 
 Start-Sleep -Seconds 5
 

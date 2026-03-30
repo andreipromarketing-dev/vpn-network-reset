@@ -7,6 +7,15 @@ if (-not (Test-Path $SnapshotsDir)) {
     New-Item -ItemType Directory -Path $SnapshotsDir | Out-Null
 }
 
+function Test-Network {
+    try {
+        $ping = Test-Connection 8.8.8.8 -Count 2 -Quiet -ErrorAction SilentlyContinue
+        if ($ping) { return $true }
+        $dns = Resolve-DnsName google.com -Server 8.8.8.8 -ErrorAction SilentlyContinue
+        return ($dns -ne $null)
+    } catch { return $false }
+}
+
 function Get-NetworkSnapshot {
     $snapshot = @{
         timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
@@ -64,6 +73,16 @@ function Compare-Snapshots($old, $new) {
 
 Write-Host ""
 Write-Host "=== Network Snapshot ===" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Checking network..." -ForegroundColor White
+if (-not (Test-Network)) {
+    Write-Host "Network is NOT working. Cannot save snapshot." -ForegroundColor Red
+    Write-Host "Fix network connection first." -ForegroundColor Yellow
+    pause
+    exit 1
+}
+Write-Host "Network is working. Proceeding..." -ForegroundColor Green
 
 $current = Get-NetworkSnapshot
 

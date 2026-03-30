@@ -1,0 +1,5 @@
+# Personal data - do not commit
+current_config.txt
+presets/working-preset.json
+reset.log
+*.log

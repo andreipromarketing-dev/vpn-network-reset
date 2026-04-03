@@ -19,6 +19,40 @@ function Write-Status($msg, $type) {
     Write-Log "[$type.ToUpper()] $msg"
 }
 
+function Disable-AllVPNAdapters {
+    $vpnPatterns = @("VPN", "Cisco", "OpenVPN", "WireGuard", "TAP", "TUN", "NordVPN", "ExpressVPN", "CyberGhost")
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
+    foreach ($adapter in $adapters) {
+        foreach ($pattern in $vpnPatterns) {
+            if ($adapter.Name -match $pattern) {
+                Write-Status "   Disconnecting VPN adapter: $($adapter.Name)" "warning"
+                Disable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction SilentlyContinue
+                break
+            }
+        }
+    }
+}
+
+function Wait-AdapterReady($adapter, $timeout = 15) {
+    $elapsed = 0
+    while ($elapsed -lt $timeout) {
+        $status = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
+        if ($status.Status -eq "Up") { return $true }
+        Start-Sleep -Seconds 1
+        $elapsed++
+    }
+    return $false
+}
+
+function Clean-OldSnapshots($days = 30) {
+    $cutoff = (Get-Date).AddDays(-$days)
+    $oldFiles = Get-ChildItem $SnapshotsDir -Filter "snapshot-*.json" | Where-Object { $_.LastWriteTime -lt $cutoff }
+    foreach ($file in $oldFiles) {
+        Write-Status "   Removing old snapshot: $($file.Name)" "info"
+        Remove-Item $file.FullName -Force
+    }
+}
+
 function Test-Network {
     try {
         $ping = Test-Connection 8.8.8.8 -Count 2 -Quiet -ErrorAction SilentlyContinue
@@ -29,12 +63,13 @@ function Test-Network {
 }
 
 function Get-ActiveAdapter {
-    $adapters = @("Wi-Fi", "Беспроводная сеть", "Ethernet", "Local Area Connection")
-    $available = netsh interface show interface | Select-String "Enabled"
-    foreach ($name in $adapters) {
-        if ($available -match [regex]::Escape($name)) { return $name }
-    }
-    return $adapters[0]
+    $wifiAdapter = Get-NetAdapter | Where-Object { $_.InterfaceType -eq 71 -and $_.Status -eq 'Up' } | Select-Object -First 1
+    if ($wifiAdapter) { return $wifiAdapter.Name }
+    
+    $connected = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Name -notmatch 'Tunnel|Virtual|Loopback|TAP|TUN|Bluetooth|NULL|isatap|Teredo' } | Select-Object -First 1
+    if ($connected) { return $connected.Name }
+    
+    return "Wi-Fi"
 }
 
 function Get-NetworkSnapshot {
@@ -48,17 +83,21 @@ function Get-NetworkSnapshot {
         dns = @()
     }
     try {
-        $wlanInfo = netsh wlan show interfaces | Out-String
-        if ($wlanInfo -match "SSID.*?:\s*(.+)" ) { $snapshot.ssid = $matches[1].Trim() }
-        if ($wlanInfo -match "BSSID.*?:\s*(.+)" ) { $snapshot.bssid = $matches[1].Trim() }
+        $wlanInfo = netsh wlan show interfaces 2>$null | Out-String
+        if ($wlanInfo -match "SSID\s*:\s*(.+)") { $snapshot.ssid = $matches[1].Trim() }
+        if ($wlanInfo -match "BSSID\s*:\s*([0-9a-fA-F:]+)") { $snapshot.bssid = $matches[1].Trim() }
         
-        $ipConfig = ipconfig | Out-String
-        if ($ipConfig -match "IPv4.*?(\d+\.\d+\.\d+\.\d+)") { $snapshot.ip = $matches[1] }
-        if ($ipConfig -match "Основной шлюз.*?(\d+\.\d+\.\d+\.\d+)") { $snapshot.gateway = $matches[1] }
-        
-        $dnsMatch = [regex]::Matches($ipConfig, "DNS.*?(\d+\.\d+\.\d+\.\d+)")
-        foreach ($m in $dnsMatch) { $snapshot.dns += $m.Groups[1].Value }
-        $snapshot.dns = $snapshot.dns | Select-Object -Unique
+        $netAdapter = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
+        if ($netAdapter) {
+            $ipAddr = Get-NetIPAddress -InterfaceIndex $netAdapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+            if ($ipAddr) { $snapshot.ip = $ipAddr.IPAddress }
+            
+            $route = Get-NetRoute -InterfaceIndex $netAdapter.ifIndex -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($route) { $snapshot.gateway = $route.NextHop }
+            
+            $dns = Get-DnsClientServerAddress -InterfaceIndex $netAdapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+            if ($dns.ServerAddresses) { $snapshot.dns = $dns.ServerAddresses }
+        }
     } catch {}
     return $snapshot
 }
@@ -152,30 +191,49 @@ Write-Status "Network is DOWN. Starting reset..." "warning"
 Write-Status "" "info"
 Write-Status "=== STEP 1: DNS & IP Reset ===" "info"
 
-Write-Status "[1/6] Flushing DNS..." "info"
+Write-Status "[1/8] Disabling VPN adapters..." "info"
+Disable-AllVPNAdapters
+
+Write-Status "[2/8] Restarting network adapter..." "info"
+Disable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+Enable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction SilentlyContinue
+
+if (-not (Wait-AdapterReady $adapter 15)) {
+    Write-Status "   Adapter did not come up in time" "warning"
+}
+
+Write-Status "[3/8] Flushing DNS..." "info"
 ipconfig /flushdns 2>$null
 
-Write-Status "[2/6] Releasing IP..." "info"
-ipconfig /release $adapter 2>$null
+Write-Status "[4/8] Releasing IP..." "info"
+$releaseResult = ipconfig /release $adapter 2>&1
+if ($releaseResult -match "No operation|не удается|error") {
+    Write-Status "   Release skipped (adapter not ready)" "info"
+}
 
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 2
 
-Write-Status "[3/6] Renewing IP..." "info"
-ipconfig /renew $adapter 2>$null
+Write-Status "[5/8] Renewing IP..." "info"
+$renewResult = ipconfig /renew $adapter 2>&1
+if ($renewResult -match "No operation|не удается|error") {
+    Write-Status "   Renew skipped (adapter not ready)" "info"
+}
 
-Write-Status "[4/6] Setting Google DNS..." "info"
-netsh interface ip set dns $adapter static 8.8.8.8 2>$null
-netsh interface ip add dns $adapter 1.1.1.1 index=2 2>$null
+Write-Status "[6/8] Setting Google DNS..." "info"
+$dnsResult1 = netsh interface ip set dns "$adapter" static 8.8.8.8 2>&1
+if ($dnsResult1 -match "error|Error|ошибка") {
+    Write-Status "   Primary DNS failed, retrying..." "warning"
+    Start-Sleep -Seconds 2
+    $dnsResult1 = netsh interface ip set dns "$adapter" static 8.8.8.8 2>&1
+}
+$dnsResult2 = netsh interface ip add dns "$adapter" 1.1.1.1 index=2 2>&1
 
-Write-Status "[5/6] Clearing proxy..." "info"
+Write-Status "[7/8] Clearing proxy..." "info"
 Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value "" -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
 
-Write-Status "[6/6] Restarting adapter..." "info"
-Disable-NetAdapter -Name $adapter -Confirm:$false 2>$null
-Start-Sleep -Seconds 3
-Enable-NetAdapter -Name $adapter -Confirm:$false 2>$null
-
+Write-Status "[8/8] Waiting for network..." "info"
 Start-Sleep -Seconds 10
 
 if (Test-Network) {
@@ -183,6 +241,7 @@ if (Test-Network) {
     Write-Status "[SUCCESS] Network restored!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
+    Clean-OldSnapshots 30
     Write-Log "Success - network restored after Step 1"
     pause
     exit 0
@@ -196,6 +255,7 @@ if (Apply-Presets -Adapter $adapter) {
     Write-Status "[SUCCESS] Network restored via preset!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
+    Clean-OldSnapshots 30
     Write-Log "Success - network restored via preset"
     pause
     exit 0
@@ -204,16 +264,21 @@ if (Apply-Presets -Adapter $adapter) {
 Write-Status "" "info"
 Write-Status "=== STEP 3: Aggressive Reset ===" "info"
 
-Write-Status "[1/3] Resetting Winsock..." "info"
+Write-Status "[1/4] Disabling VPN adapters..." "info"
+Disable-AllVPNAdapters
+
+Write-Status "[2/4] Resetting Winsock..." "info"
 netsh winsock reset 2>$null
 
-Write-Status "[2/3] Resetting TCP/IP..." "info"
+Write-Status "[3/4] Resetting TCP/IP..." "info"
 netsh int ip reset 2>$null
 
-Write-Status "[3/3] Final adapter restart..." "info"
+Write-Status "[4/4] Final adapter restart..." "info"
 Disable-NetAdapter -Name $adapter -Confirm:$false 2>$null
 Start-Sleep -Seconds 3
 Enable-NetAdapter -Name $adapter -Confirm:$false 2>$null
+Start-Sleep -Seconds 3
+Wait-AdapterReady $adapter 15 | Out-Null
 
 Start-Sleep -Seconds 15
 
@@ -222,6 +287,7 @@ if (Test-Network) {
     Write-Status "[SUCCESS] Network restored!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
+    Clean-OldSnapshots 30
     Write-Log "Success - network restored after Step 3"
     pause
     exit 0
@@ -236,5 +302,10 @@ Write-Status "  2. Disconnect VPN manually" "info"
 Write-Status "  3. Restart computer" "info"
 
 Write-Log "===== Network Reset FAILED ====="
+
+Write-Status "" "info"
+Write-Status "Cleaning up old snapshots..." "info"
+Clean-OldSnapshots 30
+
 pause
 exit 1

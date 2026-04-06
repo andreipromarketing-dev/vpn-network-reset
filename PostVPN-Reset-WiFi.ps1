@@ -268,7 +268,7 @@ function Show-MainMenu {
     Write-Host "[6] Stop VPN       - Otklyuchit ChatVPN"
     Write-Host "[7] VPN Status     - Status VPN"
     Write-Host ""
-    Write-Host "[8] Network Reset - Staryj funkcional"
+        Write-Host "[8] Vosstanovit Internet - Staryj funkcional"
     Write-Host "[0] Exit"
     Write-Host ""
 }
@@ -464,7 +464,7 @@ Write-Host "  VPN Network Controller v3.1" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "=== SOHRANENIE SNAPHOTA SETI ===" -ForegroundColor Cyan
+Write-Host "=== SOHRANENIE TEKUSCHEGO SOSTOANIJA SETI ===" -ForegroundColor Cyan
 $current = Get-NetworkSnapshot
 Write-Status "Current IP: $($current.ip), Gateway: $($current.gateway)" "info"
 Save-Snapshot $current

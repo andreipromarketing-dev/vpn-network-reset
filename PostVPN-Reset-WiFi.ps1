@@ -183,7 +183,7 @@ function Show-NetworkAppsTable($apps) {
         Write-Host " [VPN OTLUCHEN] " -ForegroundColor Red
     }
     Write-Host ("-" * 90) -ForegroundColor Gray
-    Write-Host ("{0,-20} | {1,-6} | {2,-18} | {3,-5} | {4,-4}" -f "Application", "PID", "Remote IP", "Port", "VPN") -ForegroundColor White
+    Write-Host ("{0,-20} | {1,-6} | {2,-18} | {3,-5} | {4,-5}" -f "Application", "PID", "Remote IP", "Port", "VPN") -ForegroundColor White
     Write-Host ("-" * 90) -ForegroundColor Gray
     
     $index = 1
@@ -192,22 +192,22 @@ function Show-NetworkAppsTable($apps) {
         
         if ($vpnConnected) {
             $vpnIcon = switch ($vpnStatus) {
-                "direct" { "[D]" }
-                default { "[V]" }
+                "direct" { "[-]" }
+                default { "[+]" }
             }
         } else {
             $vpnIcon = switch ($vpnStatus) {
-                "direct" { "[D]" }
-                "via_vpn" { "[V]" }
-                default { "[ ]" }
+                "direct" { "[-]" }
+                "via_vpn" { "[+]" }
+                default { "[0]" }
             }
         }
         
-        Write-Host ("[{0,2}] {1,-18} | {2,-6} | {3,-18} | {4,-5} | {5,-4}" -f $index, $app.Name, $app.PID, $app.RemoteAddr, $app.RemotePort, $vpnIcon)
+        Write-Host ("[{0,2}] {1,-18} | {2,-6} | {3,-18} | {4,-5} | {5,-5}" -f $index, $app.Name, $app.PID, $app.RemoteAddr, $app.RemotePort, $vpnIcon)
         $index++
     }
     Write-Host ("-" * 90) -ForegroundColor Gray
-    Write-Host "[V] - IDET CHEREZ VPN   [D] - IDET NAPRYAMUYU   [ ] - NE NASTROENO" -ForegroundColor Gray
+    Write-Host "[+] - IDET CHEREZ VPN   [-] - IDET NAPRYAMUYU   [0] - NE NASTROENO" -ForegroundColor Gray
 }
 
 function Set-AppPreference($appName, $mode) {

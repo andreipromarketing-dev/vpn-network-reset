@@ -44,12 +44,14 @@ function Wait-AdapterReady($adapter, $timeout = 15) {
     return $false
 }
 
-function Clean-OldSnapshots($days = 30) {
-    $cutoff = (Get-Date).AddDays(-$days)
-    $oldFiles = Get-ChildItem $SnapshotsDir -Filter "snapshot-*.json" | Where-Object { $_.LastWriteTime -lt $cutoff }
-    foreach ($file in $oldFiles) {
-        Write-Status "   Removing old snapshot: $($file.Name)" "info"
-        Remove-Item $file.FullName -Force
+function Clean-OldSnapshots($keepCount = 50) {
+    $snapshots = Get-ChildItem $SnapshotsDir -Filter "snapshot-*.json" | Sort-Object LastWriteTime -Descending
+    if ($snapshots.Count -gt $keepCount) {
+        $toRemove = $snapshots | Select-Object -Skip $keepCount
+        foreach ($file in $toRemove) {
+            Write-Status "   Removing old snapshot: $($file.Name)" "info"
+            Remove-Item $file.FullName -Force
+        }
     }
 }
 
@@ -267,7 +269,7 @@ if (Test-Network) {
     Write-Status "[SUCCESS] Network restored!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
-    Clean-OldSnapshots 30
+    Clean-OldSnapshots 50
     Optimize-NetworkSpeed
     Write-Log "Success - network restored after Step 1"
     pause
@@ -282,7 +284,7 @@ if (Apply-Presets -Adapter $adapter) {
     Write-Status "[SUCCESS] Network restored via preset!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
-    Clean-OldSnapshots 30
+    Clean-OldSnapshots 50
     Optimize-NetworkSpeed
     Write-Log "Success - network restored via preset"
     pause
@@ -315,7 +317,7 @@ if (Test-Network) {
     Write-Status "[SUCCESS] Network restored!" "success"
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
-    Clean-OldSnapshots 30
+    Clean-OldSnapshots 50
     Optimize-NetworkSpeed
     Write-Log "Success - network restored after Step 3"
     pause
@@ -334,7 +336,7 @@ Write-Log "===== Network Reset FAILED ====="
 
 Write-Status "" "info"
 Write-Status "Cleaning up old snapshots..." "info"
-Clean-OldSnapshots 30
+Clean-OldSnapshots 50
 
 pause
 exit 1

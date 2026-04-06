@@ -114,14 +114,19 @@ function Get-AppPreferences {
                 }
             }
             
-    return @{
-        Connected = $false
-        Adapters = $vpnAdapters
-        Process = $null
+            return @{
+                apps = $apps
+                routes = if ($data.routes) { $data.routes } else { @() }
+                lastUpdated = if ($data.lastUpdated) { $data.lastUpdated } else { "" }
+            }
+        } catch {
+            return @{ apps = @{}; routes = @(); lastUpdated = "" }
+        }
     }
+    return @{ apps = @{}; routes = @(); lastUpdated = "" }
 }
 
-function Scan-NetworkApps {
+function Get-VPNStatus {
     Write-Host ""
     Write-Host "=== SCANNING NETWORK CONNECTIONS ===" -ForegroundColor Cyan
     
@@ -279,8 +284,6 @@ function Get-VPNStatus {
         Connected = $false
         Adapters = $vpnAdapters
         Process = $null
-    }
-}
     }
 }
 

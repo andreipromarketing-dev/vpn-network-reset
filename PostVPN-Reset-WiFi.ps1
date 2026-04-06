@@ -114,7 +114,7 @@ function Save-AppPreferences($prefs) {
 
 function Scan-NetworkApps {
     Write-Host ""
-    Write-Host "=== СКАНИРОВАНИЕ СЕТЕВЫХ СОЕДИНЕНИЙ ===" -ForegroundColor Cyan
+    Write-Host "=== SCANNING NETWORK CONNECTIONS ===" -ForegroundColor Cyan
     
     $connections = Get-NetTCPConnection -State Established,TimeWait | ForEach-Object {
         $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
@@ -162,9 +162,9 @@ function Scan-NetworkApps {
 
 function Show-NetworkAppsTable($apps) {
     Write-Host ""
-    Write-Host " Активные сетевые соединения " -ForegroundColor Yellow
+    Write-Host " Active Network Connections " -ForegroundColor Yellow
     Write-Host ("-" * 80) -ForegroundColor Gray
-    Write-Host ("{0,-20} | {1,-8} | {2,-18} | {3,-6}" -f "Приложение", "PID", "Удалённый IP", "Порт") -ForegroundColor White
+    Write-Host ("{0,-20} | {1,-8} | {2,-18} | {3,-6}" -f "Application", "PID", "Remote IP", "Port") -ForegroundColor White
     Write-Host ("-" * 80) -ForegroundColor Gray
     
     $index = 1
@@ -180,13 +180,13 @@ function Set-AppPreference($appName, $mode) {
     
     if ($mode -eq "direct") {
         $prefs.apps[$appName] = "direct"
-        Write-Status "Приложение '$appName': НАПРЯМУЮ" "success"
+        Write-Status "App '$appName' set to: DIRECT" "success"
     } elseif ($mode -eq "via_vpn") {
         $prefs.apps[$appName] = "via_vpn"
-        Write-Status "Приложение '$appName': ЧЕРЕЗ VPN" "success"
+        Write-Status "App '$appName' set to: VIA VPN" "success"
     } elseif ($mode -eq "skip") {
         $prefs.apps[$appName] = "skip"
-        Write-Status "Приложение '$appName': ПРОПУСТИТЬ" "info"
+        Write-Status "App '$appName' set to: SKIP" "info"
     }
     
     Save-AppPreferences $prefs
@@ -208,22 +208,22 @@ function Get-ChatVPNPath {
 function Start-ChatVPN {
     $path = Get-ChatVPNPath
     if ($path) {
-        Write-Status "Запуск ChatVPN..." "info"
+        Write-Status "Starting ChatVPN..." "info"
         Start-Process -FilePath $path -PassThru
         Start-Sleep -Seconds 3
-        Write-Status "ChatVPN запущен" "success"
+        Write-Status "ChatVPN started" "success"
     } else {
-        Write-Status "ChatVPN не найден по ожидаемому пути" "error"
+        Write-Status "ChatVPN not found at expected paths" "error"
     }
 }
 
 function Stop-ChatVPN {
     $procs = Get-Process | Where-Object { $_.Name -match "ChatVPN|vpnchat" -or $_.Path -match "ChatVPN" }
     foreach ($p in $procs) {
-        Write-Status "Остановка $($p.ProcessName) (PID: $($p.Id))" "info"
+        Write-Status "Stopping $($p.ProcessName) (PID: $($p.Id))" "info"
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     }
-    Write-Status "ChatVPN остановлен" "success"
+    Write-Status "ChatVPN stopped" "success"
 }
 
 function Get-VPNStatus {
@@ -248,17 +248,17 @@ function Show-MainMenu {
     Write-Host "  VPN Network Controller v3.1" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "[1] Сканировать сеть   - Показать приложения с сетью"
-    Write-Host "[2] Настройки           - Настроить маршрутизацию приложений"
-    Write-Host "[3] Показать настройки  - Текущие настройки"
-    Write-Host "[4] История            - История снапшотов"
+    Write-Host "[1] Scan Network   - Show apps using network"
+    Write-Host "[2] Preferences    - Configure app routing"  
+    Write-Host "[3] Show Prefs     - View current settings"
+    Write-Host "[4] Snapshots     - Network history"
     Write-Host ""
-    Write-Host "[5] Включить VPN       - Запустить ChatVPN"
-    Write-Host "[6] Выключить VPN      - Остановить ChatVPN"
-    Write-Host "[7] Статус VPN         - Проверить подключение"
+    Write-Host "[5] Start VPN      - Enable ChatVPN"
+    Write-Host "[6] Stop VPN       - Disable ChatVPN"
+    Write-Host "[7] VPN Status     - Check connection"
     Write-Host ""
-    Write-Host "[8] Сброс сети          - Старый функционал"
-    Write-Host "[0] Выход"
+    Write-Host "[8] Network Reset - Old functionality"
+    Write-Host "[0] Exit"
     Write-Host ""
 }
 
@@ -268,7 +268,7 @@ function Set-PreferencesMenu {
     Show-NetworkAppsTable $apps
     
     Write-Host ""
-    Write-Host "Введите номер приложения для настройки (или 'a' для всех, '0' выход): " -ForegroundColor Yellow -NoNewline
+    Write-Host "Enter app number (a=all, 0=exit): " -ForegroundColor Yellow -NoNewline
     $choice = Read-Host
     
     if ($choice -eq "0" -or $choice -eq "") { return }
@@ -276,7 +276,7 @@ function Set-PreferencesMenu {
         foreach ($app in $apps) {
             Set-AppPreference $app.Name "via_vpn"
         }
-        Write-Host "Все приложения установлены: через VPN" -ForegroundColor Green
+        Write-Host "All apps set to VIA VPN" -ForegroundColor Green
         return
     }
     
@@ -285,19 +285,19 @@ function Set-PreferencesMenu {
         $selectedApp = $apps[$index]
         
         Write-Host ""
-        Write-Host "Настройка: $($selectedApp.Name)" -ForegroundColor Cyan
-        Write-Host "[V] Через VPN"
-        Write-Host "[D] Напрямую (обход VPN)"
-        Write-Host "[S] Пропустить"
+        Write-Host "Configure: $($selectedApp.Name)" -ForegroundColor Cyan
+        Write-Host "[V] Via VPN"
+        Write-Host "[D] Direct (bypass VPN)"  
+        Write-Host "[S] Skip"
         Write-Host ""
-        Write-Host "Выбор: " -ForegroundColor Yellow -NoNewline
+        Write-Host "Choice: " -ForegroundColor Yellow -NoNewline
         $mode = Read-Host
         
         switch ($mode.ToLower()) {
             "v" { Set-AppPreference $selectedApp.Name "via_vpn" }
             "d" { Set-AppPreference $selectedApp.Name "direct" }
             "s" { Set-AppPreference $selectedApp.Name "skip" }
-            default { Write-Host "Пропущено" -ForegroundColor Gray }
+            default { Write-Host "Skipped" -ForegroundColor Gray }
         }
     }
 }
@@ -306,10 +306,10 @@ function Show-PreferencesMenu {
     $prefs = Get-AppPreferences
     
     Write-Host ""
-    Write-Host "=== ТЕКУЩИЕ НАСТРОЙКИ ===" -ForegroundColor Cyan
+    Write-Host "=== CURRENT PREFERENCES ===" -ForegroundColor Cyan
     
     if ($prefs.apps.PSObject.Properties.Count -eq 0) {
-        Write-Host "Настройки ещё не установлены." -ForegroundColor Gray
+        Write-Host "No preferences set." -ForegroundColor Gray
         return
     }
     
@@ -317,8 +317,8 @@ function Show-PreferencesMenu {
         $mode = $prefs.apps.$appName
         $icon = switch ($mode) {
             "via_vpn" { "[VPN]" }
-            "direct" { "[НАПРЯМУЮ]" }
-            "skip" { "[ПРОПУСТИТЬ]" }
+            "direct" { "[DIRECT]" }
+            "skip" { "[SKIP]" }
             default { "[?]" }
         }
         Write-Host "$icon $appName"
@@ -327,12 +327,12 @@ function Show-PreferencesMenu {
 
 function Show-SnapshotsMenu {
     Write-Host ""
-    Write-Host "=== ИСТОРИЯ СНАПШОТОВ ===" -ForegroundColor Cyan
+    Write-Host "=== NETWORK SNAPSHOTS ===" -ForegroundColor Cyan
     
     $files = Get-ChildItem $SnapshotsDir -Filter "*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 20
     
     if ($files.Count -eq 0) {
-        Write-Host "Снапшоты не найдены." -ForegroundColor Gray
+        Write-Host "No snapshots found." -ForegroundColor Gray
         return
     }
     
@@ -457,7 +457,7 @@ Write-Host ""
 while ($true) {
     Show-MainMenu
     
-    $input = Read-Host "Выберите пункт"
+    $input = Read-Host "Select option"
     if ([string]::IsNullOrWhiteSpace($input)) {
         $menuChoice = ""
     } else {
@@ -469,64 +469,63 @@ while ($true) {
             $apps = Scan-NetworkApps
             Show-NetworkAppsTable $apps
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "2" {
             Set-PreferencesMenu
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "3" {
             Show-PreferencesMenu
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "4" {
             Show-SnapshotsMenu
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "5" {
             Start-ChatVPN
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "6" {
             Stop-ChatVPN
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "7" {
             $status = Get-VPNStatus
             Write-Host ""
             if ($status.Connected) {
-                Write-Host "Статус VPN: ПОДКЛЮЧЕН" -ForegroundColor Green
+                Write-Host "VPN Status: CONNECTED" -ForegroundColor Green
                 foreach ($a in $status.Adapters) {
                     Write-Host "  - $($a.Name) ($($a.Status))"
                 }
             } else {
-                Write-Host "Статус VPN: ОТКЛЮЧЕН" -ForegroundColor Red
+                Write-Host "VPN Status: DISCONNECTED" -ForegroundColor Red
             }
             Write-Host ""
-            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Write-Host "Press Enter to continue..." -ForegroundColor Gray
             Read-Host
         }
         "8" {
-            # Old network reset flow
             break
         }
         "0" {
-            Write-Host "Выход..." -ForegroundColor Yellow
+            Write-Host "Exiting..." -ForegroundColor Yellow
             exit 0
         }
         default {
-            Write-Host "Неверный пункт" -ForegroundColor Red
+            Write-Host "Invalid option" -ForegroundColor Red
         }
     }
     

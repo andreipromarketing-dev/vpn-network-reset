@@ -4,8 +4,7 @@
 
 [![Stars](https://img.shields.io/github/stars/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/stargazers)
 [![Forks](https://img.shields.io/github/forks/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/network/members)
-[![Watchers](https://img.shields.io/github/watchers/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/watchers)
-[![Download](https://img.shields.io/badge/Download-v1.1.0-blue?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/releases/tag/v1.1.0)
+[![Download](https://img.shields.io/badge/Download-v3.0-blue?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/releases/tag/v3.0)
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?style=flat-square)](https://github.com/PowerShell/PowerShell)
 [![Windows](https://img.shields.io/badge/Windows-10/11-green?style=flat-square)](https://www.microsoft.com/windows)
@@ -17,11 +16,12 @@
 
 После использования VPN (в частности ChatVPN) Windows часто показывает "DNS-сервер недоступен" и не предлагает решений.
 
-Этот скрипт безопасно:
-1. Очищает DNS-кэш
-2. Переподключает Wi-Fi адаптер
-3. Устанавливает стабильные DNS серверы
-4. **Не затрагивает Bluetooth** (защита от отключения мышек/наушников)
+Этот скрипт:
+1. Автоматически определяет активный Wi-Fi адаптер
+2. Очищает DNS-кэш и переподключает адаптер
+3. Восстанавливает сеть из сохранённых пресетов
+4. Применяет оптимизацию TCP для максимальной скорости
+5. Сохраняет до 50 рабочих конфигураций
 
 **Результат:** интернет работает без перезагрузки.
 
@@ -48,34 +48,53 @@
 
 ```
 [PRE] Checking network...
-[1] Safe DNS & IP Reset     ← DNS flush + IP renew
-   ↓ Если не помогло
-[2] Adapter Reset           ← Disable/Enable Wi-Fi only
-   ↓ Если не помогло
-[FAILED]                    ← Рекомендации пользователю
+  ↓ Если сеть работает
+[SAVE] Сохранение текущей конфигурации
+  ↓ Если сеть НЕ работает
+[1] DNS & IP Reset    ← DNS flush + IP renew + Google DNS
+[2] Presets Restore   ← Восстановление из 50 сохранённых конфигов
+[3] Aggressive Reset  ← Winsock + TCP/IP сброс
+[OPTIMIZE]            ← TCP оптимизация для скорости
 ```
 
 ### Шаг 1: Безопасный сброс
+- Отключение VPN адаптеров
+- Перезапуск Wi-Fi адаптера
 - `ipconfig /flushdns` — очистка DNS-кэша
 - `ipconfig /release` + `/renew` — обновление IP
 - Установка DNS 8.8.8.8 + 1.1.1.1
-- Очистка ARP-кэша
+- Очистка proxy настроек
 
-### Шаг 2: Сброс адаптера
-- Отключение Wi-Fi адаптера
-- Включение Wi-Fi адаптера
-- Перенастройка DNS
+### Шаг 2: Восстановление из пресетов
+- Последовательное применение сохранённых конфигураций
+- Проверка сети после каждого пресета
+- Автоматическое определение адаптера
+
+### Шаг 3: Агрессивный сброс
+- `netsh winsock reset`
+- `netsh int ip reset`
+- Финальный перезапуск адаптера
+
+### Оптимизация после восстановления
+- CTCP (Compound TCP) для высокого пинга
+- TCP timestamps выключены
+- Initial RTO 300ms
+- RSS/DCA включены
+- Dynamic ports 10000-65534
+- Registry оптимизация (TTL, MaxUserPort, TcpTimedWaitDelay)
 
 ---
 
-## 🎯 Для чего это нужно
+## 🎯 Возможности
 
-| Проблема | Решение |
-|----------|---------|
-| DNS-сервер недоступен после VPN | Автоматический сброс DNS |
-| VPN "ломает" интернет | Безопасное переподключение |
-| Не хочется перезагружать ПК | Работает без перезагрузки |
-| Bluetooth отключается при сбросе | Защита от этого ✓ |
+| Функция | Описание |
+|---------|----------|
+| Универсальный адаптер | Работает на любом языке Windows |
+| 50 снапшотов | Хранит последние 50 рабочих конфигураций |
+| TCP оптимизация | Ускоряет интернет после восстановления |
+| VPN protection | Автоматически отключает VPN адаптеры |
+| Preset restore | Восстанавливает сеть из сохранённых настроек |
+| Safe reset | Не затрагивает Bluetooth |
 
 ---
 
@@ -90,10 +109,10 @@
 
 ## ⚠️ Важно
 
-- Скрипт **НЕ перезапускает системные службы** массово
-- Скрипт **НЕ отключает все адаптеры** — только Wi-Fi
-- Скрипт **НЕ затрагивает Bluetooth** устройства
-- Адаптеры Bluetooth часто совмещены с Wi-Fi на ноутбуках
+- Скрипт **НЕ перезагружает** систему без необходимости
+- Скрипт **НЕ отключает** Bluetooth устройства
+- TCP оптимизация требует перезагрузки для полного эффекта
+- Все настройки безопасны для Windows 10/11
 
 ---
 

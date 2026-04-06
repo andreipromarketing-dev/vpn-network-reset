@@ -268,7 +268,7 @@ function Show-MainMenu {
     Write-Host "[6] Stop VPN       - Otklyuchit ChatVPN"
     Write-Host "[7] VPN Status     - Status VPN"
     Write-Host ""
-        Write-Host "[8] Vosstanovit Internet - Staryj funkcional"
+        Write-Host "[8] Vosstanovit Internet"
     Write-Host "[0] Exit"
     Write-Host ""
 }

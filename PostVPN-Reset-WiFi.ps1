@@ -102,7 +102,18 @@ $PreferencesFile = Join-Path $SnapshotsDir "preferences.json"
 
 function Get-AppPreferences {
     if (Test-Path $PreferencesFile) {
-        return Get-Content $PreferencesFile -Raw | ConvertFrom-Json
+        $data = Get-Content $PreferencesFile -Raw | ConvertFrom-Json
+        $result = @{
+            apps = @{}
+            routes = @()
+            lastUpdated = ""
+        }
+        if ($data.apps) {
+            $data.apps.PSObject.Properties | ForEach-Object { $result.apps[$_.Name] = $_.Value }
+        }
+        if ($data.routes) { $result.routes = $data.routes }
+        if ($data.lastUpdated) { $result.lastUpdated = $data.lastUpdated }
+        return $result
     }
     return @{ apps = @{}; routes = @(); lastUpdated = "" }
 }

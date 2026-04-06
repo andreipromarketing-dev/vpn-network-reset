@@ -114,48 +114,11 @@ function Get-AppPreferences {
                 }
             }
             
-            return @{
-                apps = $apps
-                routes = if ($data.routes) { $data.routes } else { @() }
-                lastUpdated = if ($data.lastUpdated) { $data.lastUpdated } else { "" }
-            }
-        } catch {
-            return @{ apps = @{}; routes = @(); lastUpdated = "" }
-        }
+    return @{
+        Connected = $false
+        Adapters = $vpnAdapters
+        Process = $null
     }
-    return @{ apps = @{}; routes = @(); lastUpdated = "" }
-}
-
-function Show-PreferencesMenu {
-    $prefs = Get-AppPreferences
-    
-    Write-Host ""
-    Write-Host "=== TEKUSCHIE NASTROJKI ===" -ForegroundColor Cyan
-    
-    $appCount = 0
-    if ($prefs.apps -and $prefs.apps.Count -gt 0) {
-        $prefs.apps.GetEnumerator() | ForEach-Object {
-            $appName = $_.Key
-            $mode = $_.Value
-            $icon = switch ($mode) {
-                "via_vpn" { "[+]" }
-                "direct" { "[-]" }
-                "skip" { "[0]" }
-                default { "[?]" }
-            }
-            Write-Host "$icon $appName"
-            $appCount++
-        }
-    }
-    
-    if ($appCount -eq 0) {
-        Write-Host "Nastrojki ne ustanovleny." -ForegroundColor Gray
-    }
-}
-
-function Save-AppPreferences($prefs) {
-    $prefs.lastUpdated = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
-    $prefs | ConvertTo-Json -Depth 3 | Out-File -FilePath $PreferencesFile -Encoding UTF8
 }
 
 function Scan-NetworkApps {
@@ -303,15 +266,21 @@ function Get-VPNStatus {
     $vpnAdapters = Get-NetAdapter | Where-Object { $_.Name -match "ChatVPN|TAP|TUN|VPN|OpenVPN|WireGuard" }
     $connected = $vpnAdapters | Where-Object { $_.Status -eq "Up" }
     
-    if ($connected) {
+    $chatVpnProcess = Get-Process | Where-Object { $_.Name -match "ChatVPN|vpnchat" } -ErrorAction SilentlyContinue
+    
+    if ($connected -or $chatVpnProcess) {
         return @{
             Connected = $true
             Adapters = $connected
+            Process = $chatVpnProcess
         }
     }
     return @{
         Connected = $false
         Adapters = $vpnAdapters
+        Process = $null
+    }
+}
     }
 }
 
@@ -404,20 +373,24 @@ function Show-PreferencesMenu {
 
 function Show-SnapshotsMenu {
     Write-Host ""
-    Write-Host "=== NETWORK SNAPSHOTS ===" -ForegroundColor Cyan
+    Write-Host "=== ISTORIJA SNAPSHOTOV ===" -ForegroundColor Cyan
     
-    $files = Get-ChildItem $SnapshotsDir -Filter "*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 20
+    $files = Get-ChildItem $SnapshotsDir -Filter "*.json" | Where-Object { $_.Name -ne "preferences.json" } | Sort-Object LastWriteTime -Descending | Select-Object -First 20
     
     if ($files.Count -eq 0) {
-        Write-Host "No snapshots found." -ForegroundColor Gray
+        Write-Host "Snapshots ne najdeny." -ForegroundColor Gray
         return
     }
     
     $index = 1
     foreach ($file in $files) {
-        $content = Get-Content $file.FullName -Raw | ConvertFrom-Json
-        $apps = if ($content.apps) { $content.apps -join ", " } else { "N/A" }
-        Write-Host ("[{0,2}] {1} - {2}" -f $index, $file.Name, $apps)
+        $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($content) {
+            $info = if ($content.ip) { "IP: $($content.ip)" } elseif ($content.timestamp) { $content.timestamp } else { "N/A" }
+            Write-Host ("[{0,2}] {1} - {2}" -f $index, $file.Name, $info)
+        } else {
+            Write-Host ("[{0,2}] {1}" -f $index, $file.Name)
+        }
         $index++
     }
 }

@@ -110,14 +110,8 @@ function Get-AppPreferences {
         }
         
         if ($data.apps) {
-            if ($data.apps -is [System.Collections.IDictionary]) {
-                $data.apps.GetEnumerator() | ForEach-Object {
-                    $result.apps[$_.Key] = $_.Value
-                }
-            } else {
-                $data.apps.PSObject.Properties | ForEach-Object {
-                    $result.apps[$_.Name] = $_.Value
-                }
+            $data.apps.GetEnumerator() | ForEach-Object {
+                $result.apps[$_.Key] = $_.Value
             }
         }
         if ($data.routes) { $result.routes = $data.routes }
@@ -354,8 +348,8 @@ function Show-PreferencesMenu {
     
     $appCount = 0
     if ($prefs.apps) {
-        $prefs.apps.PSObject.Properties | ForEach-Object {
-            $appName = $_.Name
+        $prefs.apps.GetEnumerator() | ForEach-Object {
+            $appName = $_.Key
             $mode = $_.Value
             $icon = switch ($mode) {
                 "via_vpn" { "[+]" }

@@ -102,12 +102,56 @@ $PreferencesFile = Join-Path $SnapshotsDir "preferences.json"
 
 function Get-AppPreferences {
     if (Test-Path $PreferencesFile) {
-        $data = Get-Content $PreferencesFile -Raw | ConvertFrom-Json
-        $result = @{
-            apps = @{}
-            routes = @()
-            lastUpdated = ""
+        try {
+            $json = Get-Content $PreferencesFile -Raw
+            $data = $json | ConvertFrom-Json
+            
+            $apps = @{}
+            
+            if ($data.apps) {
+                $data.apps.PSObject.Properties | ForEach-Object {
+                    $apps[$_.Name] = $_.Value
+                }
+            }
+            
+            return @{
+                apps = $apps
+                routes = if ($data.routes) { $data.routes } else { @() }
+                lastUpdated = if ($data.lastUpdated) { $data.lastUpdated } else { "" }
+            }
+        } catch {
+            return @{ apps = @{}; routes = @(); lastUpdated = "" }
         }
+    }
+    return @{ apps = @{}; routes = @(); lastUpdated = "" }
+}
+
+function Show-PreferencesMenu {
+    $prefs = Get-AppPreferences
+    
+    Write-Host ""
+    Write-Host "=== TEKUSCHIE NASTROJKI ===" -ForegroundColor Cyan
+    
+    $appCount = 0
+    if ($prefs.apps -and $prefs.apps.Count -gt 0) {
+        $prefs.apps.GetEnumerator() | ForEach-Object {
+            $appName = $_.Key
+            $mode = $_.Value
+            $icon = switch ($mode) {
+                "via_vpn" { "[+]" }
+                "direct" { "[-]" }
+                "skip" { "[0]" }
+                default { "[?]" }
+            }
+            Write-Host "$icon $appName"
+            $appCount++
+        }
+    }
+    
+    if ($appCount -eq 0) {
+        Write-Host "Nastrojki ne ustanovleny." -ForegroundColor Gray
+    }
+}
         
         if ($data.apps) {
             $data.apps.GetEnumerator() | ForEach-Object {
@@ -191,7 +235,10 @@ function Show-NetworkAppsTable($apps) {
     
     $index = 1
     foreach ($app in $apps) {
-        $vpnStatus = $prefs.apps[$app.Name]
+        $vpnStatus = $null
+        if ($prefs.apps -and $prefs.apps.PSObject.Properties[$app.Name]) {
+            $vpnStatus = $prefs.apps.PSObject.Properties[$app.Name].Value
+        }
         
         if ($vpnConnected) {
             $vpnIcon = switch ($vpnStatus) {

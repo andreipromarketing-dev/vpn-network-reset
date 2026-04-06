@@ -53,6 +53,32 @@ function Clean-OldSnapshots($days = 30) {
     }
 }
 
+function Optimize-NetworkSpeed {
+    Write-Status "" "info"
+    Write-Status "=== OPTIMIZING NETWORK SPEED ===" "info"
+    
+    Write-Status "[1/4] Disabling TCP Auto-Tuning..." "info"
+    $tcpResult = netsh interface tcp set global autotuninglevel=disabled 2>&1
+    if ($tcpResult -match "OK|успешно") {
+        Write-Status "   TCP Auto-Tuning disabled" "success"
+    }
+    
+    Write-Status "[2/4] Clearing DNS cache..." "info"
+    ipconfig /flushdns 2>$null
+    
+    Write-Status "[3/4] Resetting network stack..." "info"
+    netsh winsock reset 2>$null | Out-Null
+    
+    Write-Status "[4/4] Setting network adapter speed..." "info"
+    $netAdapter = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
+    if ($netAdapter) {
+        $currentSpeed = $netAdapter.LinkSpeed
+        Write-Status "   Current link speed: $currentSpeed" "info"
+    }
+    
+    Write-Status "[DONE] Network optimized!" "success"
+}
+
 function Test-Network {
     try {
         $ping = Test-Connection 8.8.8.8 -Count 2 -Quiet -ErrorAction SilentlyContinue
@@ -242,6 +268,7 @@ if (Test-Network) {
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
     Clean-OldSnapshots 30
+    Optimize-NetworkSpeed
     Write-Log "Success - network restored after Step 1"
     pause
     exit 0
@@ -256,6 +283,7 @@ if (Apply-Presets -Adapter $adapter) {
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
     Clean-OldSnapshots 30
+    Optimize-NetworkSpeed
     Write-Log "Success - network restored via preset"
     pause
     exit 0
@@ -288,6 +316,7 @@ if (Test-Network) {
     $current = Get-NetworkSnapshot
     Save-Snapshot $current
     Clean-OldSnapshots 30
+    Optimize-NetworkSpeed
     Write-Log "Success - network restored after Step 3"
     pause
     exit 0

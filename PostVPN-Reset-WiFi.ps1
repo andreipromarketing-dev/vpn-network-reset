@@ -341,22 +341,26 @@ function Show-PreferencesMenu {
     $prefs = Get-AppPreferences
     
     Write-Host ""
-    Write-Host "=== CURRENT PREFERENCES ===" -ForegroundColor Cyan
+    Write-Host "=== TEKUSCHIE NASTROJKI ===" -ForegroundColor Cyan
     
-    if ($prefs.apps.PSObject.Properties.Count -eq 0) {
-        Write-Host "No preferences set." -ForegroundColor Gray
-        return
+    $appCount = 0
+    if ($prefs.apps) {
+        $prefs.apps.PSObject.Properties | ForEach-Object {
+            $appName = $_.Name
+            $mode = $_.Value
+            $icon = switch ($mode) {
+                "via_vpn" { "[+]" }
+                "direct" { "[-]" }
+                "skip" { "[0]" }
+                default { "[?]" }
+            }
+            Write-Host "$icon $appName"
+            $appCount++
+        }
     }
     
-    foreach ($appName in $prefs.apps.PSObject.Properties.Name) {
-        $mode = $prefs.apps.$appName
-        $icon = switch ($mode) {
-            "via_vpn" { "[VPN]" }
-            "direct" { "[DIRECT]" }
-            "skip" { "[SKIP]" }
-            default { "[?]" }
-        }
-        Write-Host "$icon $appName"
+    if ($appCount -eq 0) {
+        Write-Host "Nastrojki ne ustanovleny." -ForegroundColor Gray
     }
 }
 

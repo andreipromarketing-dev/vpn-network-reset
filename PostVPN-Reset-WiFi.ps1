@@ -108,8 +108,17 @@ function Get-AppPreferences {
             routes = @()
             lastUpdated = ""
         }
+        
         if ($data.apps) {
-            $data.apps.PSObject.Properties | ForEach-Object { $result.apps[$_.Name] = $_.Value }
+            if ($data.apps -is [System.Collections.IDictionary]) {
+                $data.apps.GetEnumerator() | ForEach-Object {
+                    $result.apps[$_.Key] = $_.Value
+                }
+            } else {
+                $data.apps.PSObject.Properties | ForEach-Object {
+                    $result.apps[$_.Name] = $_.Value
+                }
+            }
         }
         if ($data.routes) { $result.routes = $data.routes }
         if ($data.lastUpdated) { $result.lastUpdated = $data.lastUpdated }

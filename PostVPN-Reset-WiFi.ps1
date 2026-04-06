@@ -98,6 +98,253 @@ function Optimize-NetworkSpeed {
     Write-Status "Current link speed: $((Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue).LinkSpeed)" "info"
 }
 
+$PreferencesFile = Join-Path $SnapshotsDir "preferences.json"
+
+function Get-AppPreferences {
+    if (Test-Path $PreferencesFile) {
+        return Get-Content $PreferencesFile -Raw | ConvertFrom-Json
+    }
+    return @{ apps = @{}; routes = @(); lastUpdated = "" }
+}
+
+function Save-AppPreferences($prefs) {
+    $prefs.lastUpdated = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+    $prefs | ConvertTo-Json -Depth 3 | Out-File -FilePath $PreferencesFile -Encoding UTF8
+}
+
+function Scan-NetworkApps {
+    Write-Host ""
+    Write-Host "=== СКАНИРОВАНИЕ СЕТЕВЫХ СОЕДИНЕНИЙ ===" -ForegroundColor Cyan
+    
+    $connections = Get-NetTCPConnection -State Established,TimeWait | ForEach-Object {
+        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        [PSCustomObject]@{
+            Name = if ($proc) { $proc.ProcessName } else { "Unknown" }
+            PID = $_.OwningProcess
+            LocalAddr = $_.LocalAddress
+            LocalPort = $_.LocalPort
+            RemoteAddr = $_.RemoteAddress
+            RemotePort = $_.RemotePort
+            State = $_.State
+        }
+    } | Sort-Object Name -Unique
+    
+    $udpConnections = Get-NetUDPEndpoint | ForEach-Object {
+        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        [PSCustomObject]@{
+            Name = if ($proc) { $proc.ProcessName } else { "Unknown" }
+            PID = $_.OwningProcess
+            LocalAddr = $_.LocalAddress
+            LocalPort = $_.LocalPort
+            RemoteAddr = $_.RemoteAddress
+            RemotePort = $_.RemotePort
+            State = "UDP"
+        }
+    } | Sort-Object Name -Unique
+    
+    $allApps = ($connections + $udpConnections) | Sort-Object Name -Unique
+    
+    $appsList = @()
+    foreach ($app in $allApps) {
+        if ($app.Name -ne "Unknown" -and $app.Name -ne "System" -and $app.Name -notmatch "^svchost") {
+            $appsList += [PSCustomObject]@{
+                Name = $app.Name
+                PID = $app.PID
+                RemoteAddr = $app.RemoteAddr
+                RemotePort = $app.RemotePort
+                Protocol = if ($app.State -eq "UDP") { "UDP" } else { "TCP" }
+            }
+        }
+    }
+    
+    return $appsList | Sort-Object Name
+}
+
+function Show-NetworkAppsTable($apps) {
+    Write-Host ""
+    Write-Host " Активные сетевые соединения " -ForegroundColor Yellow
+    Write-Host ("-" * 80) -ForegroundColor Gray
+    Write-Host ("{0,-20} | {1,-8} | {2,-18} | {3,-6}" -f "Приложение", "PID", "Удалённый IP", "Порт") -ForegroundColor White
+    Write-Host ("-" * 80) -ForegroundColor Gray
+    
+    $index = 1
+    foreach ($app in $apps) {
+        Write-Host ("[{0,2}] {1,-18} | {2,-8} | {3,-18} | {4,-6}" -f $index, $app.Name, $app.PID, $app.RemoteAddr, $app.RemotePort)
+        $index++
+    }
+    Write-Host ("-" * 80) -ForegroundColor Gray
+}
+
+function Set-AppPreference($appName, $mode) {
+    $prefs = Get-AppPreferences
+    
+    if ($mode -eq "direct") {
+        $prefs.apps[$appName] = "direct"
+        Write-Status "Приложение '$appName': НАПРЯМУЮ" "success"
+    } elseif ($mode -eq "via_vpn") {
+        $prefs.apps[$appName] = "via_vpn"
+        Write-Status "Приложение '$appName': ЧЕРЕЗ VPN" "success"
+    } elseif ($mode -eq "skip") {
+        $prefs.apps[$appName] = "skip"
+        Write-Status "Приложение '$appName': ПРОПУСТИТЬ" "info"
+    }
+    
+    Save-AppPreferences $prefs
+}
+
+function Get-ChatVPNPath {
+    $paths = @(
+        "C:\Program Files (x86)\ChatVPN\ChatVPN.exe",
+        "C:\Program Files\ChatVPN\ChatVPN.exe",
+        "${env:ProgramFiles(x86)}\ChatVPN\ChatVPN.exe",
+        "${env:ProgramFiles}\ChatVPN\ChatVPN.exe"
+    )
+    foreach ($p in $paths) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Start-ChatVPN {
+    $path = Get-ChatVPNPath
+    if ($path) {
+        Write-Status "Запуск ChatVPN..." "info"
+        Start-Process -FilePath $path -PassThru
+        Start-Sleep -Seconds 3
+        Write-Status "ChatVPN запущен" "success"
+    } else {
+        Write-Status "ChatVPN не найден по ожидаемому пути" "error"
+    }
+}
+
+function Stop-ChatVPN {
+    $procs = Get-Process | Where-Object { $_.Name -match "ChatVPN|vpnchat" -or $_.Path -match "ChatVPN" }
+    foreach ($p in $procs) {
+        Write-Status "Остановка $($p.ProcessName) (PID: $($p.Id))" "info"
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    }
+    Write-Status "ChatVPN остановлен" "success"
+}
+
+function Get-VPNStatus {
+    $vpnAdapters = Get-NetAdapter | Where-Object { $_.Name -match "ChatVPN|TAP|TUN|VPN|OpenVPN|WireGuard" }
+    $connected = $vpnAdapters | Where-Object { $_.Status -eq "Up" }
+    
+    if ($connected) {
+        return @{
+            Connected = $true
+            Adapters = $connected
+        }
+    }
+    return @{
+        Connected = $false
+        Adapters = $vpnAdapters
+    }
+}
+
+function Show-MainMenu {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  VPN Network Controller v3.1" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "[1] Сканировать сеть   - Показать приложения с сетью"
+    Write-Host "[2] Настройки           - Настроить маршрутизацию приложений"
+    Write-Host "[3] Показать настройки  - Текущие настройки"
+    Write-Host "[4] История            - История снапшотов"
+    Write-Host ""
+    Write-Host "[5] Включить VPN       - Запустить ChatVPN"
+    Write-Host "[6] Выключить VPN      - Остановить ChatVPN"
+    Write-Host "[7] Статус VPN         - Проверить подключение"
+    Write-Host ""
+    Write-Host "[8] Сброс сети          - Старый функционал"
+    Write-Host "[0] Выход"
+    Write-Host ""
+}
+
+function Set-PreferencesMenu {
+    $prefs = Get-AppPreferences
+    $apps = Scan-NetworkApps
+    Show-NetworkAppsTable $apps
+    
+    Write-Host ""
+    Write-Host "Введите номер приложения для настройки (или 'a' для всех, '0' выход): " -ForegroundColor Yellow -NoNewline
+    $choice = Read-Host
+    
+    if ($choice -eq "0" -or $choice -eq "") { return }
+    if ($choice -eq "a" -or $choice -eq "A") {
+        foreach ($app in $apps) {
+            Set-AppPreference $app.Name "via_vpn"
+        }
+        Write-Host "Все приложения установлены: через VPN" -ForegroundColor Green
+        return
+    }
+    
+    $index = [int]$choice - 1
+    if ($index -ge 0 -and $index -lt $apps.Count) {
+        $selectedApp = $apps[$index]
+        
+        Write-Host ""
+        Write-Host "Настройка: $($selectedApp.Name)" -ForegroundColor Cyan
+        Write-Host "[V] Через VPN"
+        Write-Host "[D] Напрямую (обход VPN)"
+        Write-Host "[S] Пропустить"
+        Write-Host ""
+        Write-Host "Выбор: " -ForegroundColor Yellow -NoNewline
+        $mode = Read-Host
+        
+        switch ($mode.ToLower()) {
+            "v" { Set-AppPreference $selectedApp.Name "via_vpn" }
+            "d" { Set-AppPreference $selectedApp.Name "direct" }
+            "s" { Set-AppPreference $selectedApp.Name "skip" }
+            default { Write-Host "Пропущено" -ForegroundColor Gray }
+        }
+    }
+}
+
+function Show-PreferencesMenu {
+    $prefs = Get-AppPreferences
+    
+    Write-Host ""
+    Write-Host "=== ТЕКУЩИЕ НАСТРОЙКИ ===" -ForegroundColor Cyan
+    
+    if ($prefs.apps.PSObject.Properties.Count -eq 0) {
+        Write-Host "Настройки ещё не установлены." -ForegroundColor Gray
+        return
+    }
+    
+    foreach ($appName in $prefs.apps.PSObject.Properties.Name) {
+        $mode = $prefs.apps.$appName
+        $icon = switch ($mode) {
+            "via_vpn" { "[VPN]" }
+            "direct" { "[НАПРЯМУЮ]" }
+            "skip" { "[ПРОПУСТИТЬ]" }
+            default { "[?]" }
+        }
+        Write-Host "$icon $appName"
+    }
+}
+
+function Show-SnapshotsMenu {
+    Write-Host ""
+    Write-Host "=== ИСТОРИЯ СНАПШОТОВ ===" -ForegroundColor Cyan
+    
+    $files = Get-ChildItem $SnapshotsDir -Filter "*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 20
+    
+    if ($files.Count -eq 0) {
+        Write-Host "Снапшоты не найдены." -ForegroundColor Gray
+        return
+    }
+    
+    $index = 1
+    foreach ($file in $files) {
+        $content = Get-Content $file.FullName -Raw | ConvertFrom-Json
+        $apps = if ($content.apps) { $content.apps -join ", " } else { "N/A" }
+        Write-Host ("[{0,2}] {1} - {2}" -f $index, $file.Name, $apps)
+        $index++
+    }
+}
+
 function Test-Network {
     try {
         $ping = Test-Connection 8.8.8.8 -Count 2 -Quiet -ErrorAction SilentlyContinue
@@ -202,9 +449,89 @@ function Apply-Presets {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "   NETWORK AUTO-RESET v3.0" -ForegroundColor Cyan
+Write-Host "  VPN Network Controller v3.1" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+
+# Main menu loop
+while ($true) {
+    Show-MainMenu
+    
+    $input = Read-Host "Выберите пункт"
+    if ([string]::IsNullOrWhiteSpace($input)) {
+        $menuChoice = ""
+    } else {
+        $menuChoice = $input.Trim()
+    }
+    
+    switch ($menuChoice) {
+        "1" {
+            $apps = Scan-NetworkApps
+            Show-NetworkAppsTable $apps
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "2" {
+            Set-PreferencesMenu
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "3" {
+            Show-PreferencesMenu
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "4" {
+            Show-SnapshotsMenu
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "5" {
+            Start-ChatVPN
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "6" {
+            Stop-ChatVPN
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "7" {
+            $status = Get-VPNStatus
+            Write-Host ""
+            if ($status.Connected) {
+                Write-Host "Статус VPN: ПОДКЛЮЧЕН" -ForegroundColor Green
+                foreach ($a in $status.Adapters) {
+                    Write-Host "  - $($a.Name) ($($a.Status))"
+                }
+            } else {
+                Write-Host "Статус VPN: ОТКЛЮЧЕН" -ForegroundColor Red
+            }
+            Write-Host ""
+            Write-Host "Нажмите Enter для продолжения..." -ForegroundColor Gray
+            Read-Host
+        }
+        "8" {
+            # Old network reset flow
+            break
+        }
+        "0" {
+            Write-Host "Выход..." -ForegroundColor Yellow
+            exit 0
+        }
+        default {
+            Write-Host "Неверный пункт" -ForegroundColor Red
+        }
+    }
+    
+    if ($menuChoice -eq "8") { break }
+}
 
 Write-Log "===== Network Auto-Reset Started ====="
 $adapter = Get-ActiveAdapter

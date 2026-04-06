@@ -599,7 +599,11 @@ if (Test-Network) {
         Write-Status "No changes from last snapshot." "info"
     }
     
-    Write-Log "Network working, snapshot saved"
+    Write-Host ""
+    Write-Status "=== OPTIMIZING NETWORK SPEED (SET RABOTAET) ===" "info"
+    Optimize-NetworkSpeed
+    
+    Write-Log "Network working, optimized"
     Write-Host ""
     pause
     exit 0

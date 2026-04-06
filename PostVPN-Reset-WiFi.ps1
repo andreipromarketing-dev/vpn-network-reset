@@ -172,18 +172,27 @@ function Scan-NetworkApps {
 }
 
 function Show-NetworkAppsTable($apps) {
+    $prefs = Get-AppPreferences
+    
     Write-Host ""
     Write-Host " Active Network Connections " -ForegroundColor Yellow
-    Write-Host ("-" * 80) -ForegroundColor Gray
-    Write-Host ("{0,-20} | {1,-8} | {2,-18} | {3,-6}" -f "Application", "PID", "Remote IP", "Port") -ForegroundColor White
-    Write-Host ("-" * 80) -ForegroundColor Gray
+    Write-Host ("-" * 90) -ForegroundColor Gray
+    Write-Host ("{0,-20} | {1,-6} | {2,-18} | {3,-5} | {4,-4}" -f "Application", "PID", "Remote IP", "Port", "VPN") -ForegroundColor White
+    Write-Host ("-" * 90) -ForegroundColor Gray
     
     $index = 1
     foreach ($app in $apps) {
-        Write-Host ("[{0,2}] {1,-18} | {2,-8} | {3,-18} | {4,-6}" -f $index, $app.Name, $app.PID, $app.RemoteAddr, $app.RemotePort)
+        $vpnStatus = $prefs.apps[$app.Name]
+        $vpnIcon = switch ($vpnStatus) {
+            "via_vpn" { "[V]" }
+            "direct" { "[D]" }
+            default { "[ ]" }
+        }
+        Write-Host ("[{0,2}] {1,-18} | {2,-6} | {3,-18} | {4,-5} | {5,-4}" -f $index, $app.Name, $app.PID, $app.RemoteAddr, $app.RemotePort, $vpnIcon)
         $index++
     }
-    Write-Host ("-" * 80) -ForegroundColor Gray
+    Write-Host ("-" * 90) -ForegroundColor Gray
+    Write-Host "[V] - CHEREZ VPN   [D] - NAPRYAMUYU   [ ] - NE NASTROENO" -ForegroundColor Gray
 }
 
 function Set-AppPreference($appName, $mode) {

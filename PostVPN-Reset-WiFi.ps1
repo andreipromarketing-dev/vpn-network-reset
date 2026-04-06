@@ -59,26 +59,43 @@ function Optimize-NetworkSpeed {
     Write-Status "" "info"
     Write-Status "=== OPTIMIZING NETWORK SPEED ===" "info"
     
-    Write-Status "[1/4] Disabling TCP Auto-Tuning..." "info"
-    $tcpResult = netsh interface tcp set global autotuninglevel=disabled 2>&1
-    if ($tcpResult -match "OK|успешно") {
-        Write-Status "   TCP Auto-Tuning disabled" "success"
-    }
+    Write-Status "[1/10] Setting TCP congestion provider..." "info"
+    $tcpResult = netsh int tcp set supplemental template=internet congestionprovider=ctcp 2>&1
+    Write-Status "   CTCP enabled" "success"
     
-    Write-Status "[2/4] Clearing DNS cache..." "info"
+    Write-Status "[2/10] Disabling TCP timestamps..." "info"
+    netsh int tcp set global timestamps=disabled 2>$null
+    
+    Write-Status "[3/10] Setting Initial RTO to 300ms..." "info"
+    netsh int tcp set global initialRto=300 2>$null
+    
+    Write-Status "[4/10] Disabling RSC (Receive Segment Coalescing)..." "info"
+    netsh int tcp set global rsc=disabled 2>$null
+    
+    Write-Status "[5/10] Enabling RSS and DCA..." "info"
+    netsh int tcp set global rss=enabled dca=enabled 2>$null
+    
+    Write-Status "[6/10] Disabling Non-SACK RTT Resiliency..." "info"
+    netsh int tcp set global nonsackrttresiliency=disabled 2>$null
+    
+    Write-Status "[7/10] Setting max SYN retransmissions to 2..." "info"
+    netsh int tcp set global maxsynretransmissions=2 2>$null
+    
+    Write-Status "[8/10] Expanding dynamic port range..." "info"
+    netsh int ipv4 set dynamicport tcp start=10000 num=55534 2>$null
+    netsh int ipv6 set dynamicport tcp start=10000 num=55534 2>$null
+    
+    Write-Status "[9/10] Optimizing registry settings..." "info"
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v DefaultTTL /d 64 /t REG_DWORD /f 2>$null | Out-Null
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v MaxUserPort /d 65534 /t REG_DWORD /f 2>$null | Out-Null
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /d 30 /t REG_DWORD /f 2>$null | Out-Null
+    
+    Write-Status "[10/10] Clearing DNS cache..." "info"
     ipconfig /flushdns 2>$null
     
-    Write-Status "[3/4] Resetting network stack..." "info"
-    netsh winsock reset 2>$null | Out-Null
-    
-    Write-Status "[4/4] Setting network adapter speed..." "info"
-    $netAdapter = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
-    if ($netAdapter) {
-        $currentSpeed = $netAdapter.LinkSpeed
-        Write-Status "   Current link speed: $currentSpeed" "info"
-    }
-    
-    Write-Status "[DONE] Network optimized!" "success"
+    Write-Status "" "info"
+    Write-Status "Optimization complete! Reboot recommended." "success"
+    Write-Status "Current link speed: $((Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue).LinkSpeed)" "info"
 }
 
 function Test-Network {

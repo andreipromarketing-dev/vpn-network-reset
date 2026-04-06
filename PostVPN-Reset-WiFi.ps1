@@ -152,18 +152,6 @@ function Show-PreferencesMenu {
         Write-Host "Nastrojki ne ustanovleny." -ForegroundColor Gray
     }
 }
-        
-        if ($data.apps) {
-            $data.apps.GetEnumerator() | ForEach-Object {
-                $result.apps[$_.Key] = $_.Value
-            }
-        }
-        if ($data.routes) { $result.routes = $data.routes }
-        if ($data.lastUpdated) { $result.lastUpdated = $data.lastUpdated }
-        return $result
-    }
-    return @{ apps = @{}; routes = @(); lastUpdated = "" }
-}
 
 function Save-AppPreferences($prefs) {
     $prefs.lastUpdated = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")

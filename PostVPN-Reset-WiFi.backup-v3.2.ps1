@@ -8,18 +8,6 @@ if (-not (Test-Path $SnapshotsDir)) {
     New-Item -ItemType Directory -Path $SnapshotsDir | Out-Null
 }
 
-function Cleanup-OnExit {
-    $savedErrors = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    Clean-RoutesOnExit 2>$null
-    $ErrorActionPreference = $savedErrors
-}
-
-trap {
-    Cleanup-OnExit
-    exit 0
-}
-
 function Write-Log($msg) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$timestamp | $msg" | Out-File -FilePath $LogFile -Append -Encoding UTF8
@@ -479,39 +467,16 @@ function Show-CollectedIPsMenu {
 }
 
 function Test-IPLatency($ip, $timeout = 2000) {
-    $testPorts = @(80, 443, 8080)
-    foreach ($port in $testPorts) {
-        try {
-            $tcpClient = New-Object System.Net.Sockets.TcpClient
-            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
-            $wait = $connect.AsyncWaitHandle.WaitOne($timeout, $false)
-            
-            if ($wait -and $tcpClient.Connected) {
-                $tcpClient.Close()
-                return 1
+    try {
+        $ping = Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue -TimeoutSeconds 2
+        if ($ping) {
+            $result = Test-Connection -ComputerName $ip -Count 1 -ErrorAction SilentlyContinue -TimeoutSeconds 2
+            if ($result) {
+                return $result.ResponseTime
             }
-            $tcpClient.Close()
-        } catch { }
-    }
+        }
+    } catch { }
     return -1
-}
-
-function Test-IPAviaTCP($ip) {
-    $testPorts = @(80, 443, 8080, 5222, 4433)
-    foreach ($port in $testPorts) {
-        try {
-            $tcpClient = New-Object System.Net.Sockets.TcpClient
-            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
-            $wait = $connect.AsyncWaitHandle.WaitOne(1500, $false)
-            
-            if ($wait -and $tcpClient.Connected) {
-                $tcpClient.Close()
-                return $true
-            }
-            $tcpClient.Close()
-        } catch { }
-    }
-    return $false
 }
 
 function Apply-CollectedIPsWithPingCheck($filePath) {
@@ -535,7 +500,7 @@ function Apply-CollectedIPsWithPingCheck($filePath) {
     
     Write-Host "Programmy (+): $($viaVpnApps -join ', ')" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Proveryajem dostupnost IP..." -ForegroundColor Yellow
+    Write-Host "Pinguem IP adresa..." -ForegroundColor Yellow
     Write-Host ""
     
     $ipResults = @()
@@ -544,18 +509,19 @@ function Apply-CollectedIPsWithPingCheck($filePath) {
     
     foreach ($ip in $content.ips) {
         $current++
-        $isWorking = Test-IPAviaTCP $ip
-        $status = if ($isWorking) { "OK" } else { "FAIL" }
-        $color = if ($status -eq "OK") { "Green" } else { "Red" }
+        $latency = Test-IPLatency $ip
+        $status = if ($latency -gt 0 -and $latency -lt 150) { "OK" } elseif ($latency -gt 0) { "SLOW" } else { "FAIL" }
+        $color = if ($status -eq "OK") { "Green" } elseif ($status -eq "SLOW") { "Yellow" } else { "Red" }
         
-        if ($isWorking) {
-            Write-Host "[$current/$total] $ip - OK" -ForegroundColor $color
+        if ($latency -gt 0) {
+            Write-Host "[$current/$total] $ip - ${latency}ms" -ForegroundColor $color
         } else {
             Write-Host "[$current/$total] $ip - TIMEOUT" -ForegroundColor Red
         }
         
         $ipResults += [PSCustomObject]@{
             IP = $ip
+            Latency = $latency
             Status = $status
         }
     }
@@ -563,9 +529,11 @@ function Apply-CollectedIPsWithPingCheck($filePath) {
     Write-Host ""
     Write-Host "=== REZULTATY ===" -ForegroundColor Cyan
     $okIPs = $ipResults | Where-Object { $_.Status -eq "OK" }
+    $slowIPs = $ipResults | Where-Object { $_.Status -eq "SLOW" }
     $failIPs = $ipResults | Where-Object { $_.Status -eq "FAIL" }
     
-    Write-Host "Dostupnye: $($okIPs.Count)" -ForegroundColor Green
+    Write-Host "Bystrye (<150ms): $($okIPs.Count)" -ForegroundColor Green
+    Write-Host "Medlennye (150ms+): $($slowIPs.Count)" -ForegroundColor Yellow
     Write-Host "Ne dostupnye: $($failIPs.Count)" -ForegroundColor Red
     Write-Host ""
     
@@ -574,7 +542,8 @@ function Apply-CollectedIPsWithPingCheck($filePath) {
         return
     }
     
-    Write-Host "Primenyajem marshruty dlya dostupnyh IP..." -ForegroundColor Cyan
+    $threshold = 150
+    Write-Host "Primenyajem marshruty s pingom < ${threshold}ms..." -ForegroundColor Cyan
     
     $wifiGateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch "ChatVPN|VPN|Tunnel" } | Select-Object -First 1).NextHop
     
@@ -631,7 +600,6 @@ function Start-AutoMode($filePath) {
     $script:AutoModeRunning = $true
     $script:AutoModeFilePath = $filePath
     $script:AutoModeApps = $viaVpnApps
-    $script:FailedIPs = @{}
     
     $wifiGateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch "ChatVPN|VPN|Tunnel" } | Select-Object -First 1).NextHop
     
@@ -639,40 +607,21 @@ function Start-AutoMode($filePath) {
         $timestamp = Get-Date -Format "HH:mm:ss"
         
         $ipResults = @()
-        $workingCount = 0
         foreach ($ip in $content.ips) {
-            $isWorking = Test-IPAviaTCP $ip
-            if ($isWorking) {
-                $workingCount++
+            $latency = Test-IPLatency $ip
+            if ($latency -gt 0) {
                 $ipResults += [PSCustomObject]@{
                     IP = $ip
-                    Latency = 1
-                }
-                if ($script:FailedIPs.ContainsKey($ip)) {
-                    $script:FailedIPs[$ip] = 0
-                }
-            } else {
-                if (-not $script:FailedIPs.ContainsKey($ip)) {
-                    $script:FailedIPs[$ip] = 1
-                } else {
-                    $script:FailedIPs[$ip]++
-                }
-                
-                if ($script:FailedIPs[$ip] -ge 3) {
-                    $existing = Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -notmatch "127\.0\.0\.1|::" }
-                    if ($existing) {
-                        try {
-                            $null = route delete $ip mask 255.255.255.255 2>$null
-                            Write-Host "[$timestamp] Udalen neotvechajushij IP: $ip" -ForegroundColor Yellow
-                        } catch { }
-                    }
-                    $script:FailedIPs[$ip] = 0
+                    Latency = $latency
                 }
             }
         }
         
         if ($ipResults.Count -gt 0) {
-            Write-Host "[$timestamp] Rabotayut: $($ipResults.Count)/$($content.ips.Count) IP" -ForegroundColor Green
+            $best = ($ipResults | Sort-Object Latency | Select-Object -First 1)
+            $avg = [math]::Round(($ipResults | Measure-Object Latency -Average).Average, 1)
+            
+            Write-Host "[$timestamp] Luchshij IP: $($best.IP) ($($best.Latency)ms) | Srednij: ${avg}ms | Rabotayut: $($ipResults.Count)/$($content.ips.Count)" -ForegroundColor Cyan
             
             foreach ($ip in $content.ips) {
                 $existing = Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -notmatch "127\.0\.0\.1|::" }
@@ -877,74 +826,6 @@ function Get-VPNStatus {
     }
 }
 
-function Test-Network {
-    try {
-        $gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
-        if ($gateway) {
-            $ping = Test-Connection -ComputerName $gateway -Count 1 -Quiet -ErrorAction SilentlyContinue
-            if ($ping) { return $true }
-        }
-        $ping = Test-Connection 8.8.8.8 -Count 2 -Quiet -ErrorAction SilentlyContinue
-        if ($ping) { return $true }
-        $dns = Resolve-DnsName google.com -Server 8.8.8.8 -ErrorAction SilentlyContinue
-        return ($dns -ne $null)
-    } catch { return $false }
-}
-
-function Test-NetworkSpeed {
-    Write-Host "Izmerenie skorosti interneta..." -ForegroundColor Yellow
-    
-    $testServer = "speedtest.t-online.de"
-    $testFile = "random4000x4000.jpg"
-    $tempFile = "$env:TEMP\speedtest_temp.dat"
-    
-    $startTime = Get-Date
-    $downloaded = 0
-    
-    try {
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile("https://$testServer/$testFile", $tempFile)
-        
-        if (Test-Path $tempFile) {
-            $fileInfo = Get-Item $tempFile
-            $downloaded = $fileInfo.Length
-            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-        }
-    } catch {
-        try {
-            $response = Invoke-WebRequest -Uri "https://speed.cloudflare.com/__down?bytes=10000000" -UseBasicParsing -TimeoutSec 10
-            $downloaded = $response.Content.Length
-        } catch { }
-    }
-    
-    $endTime = Get-Date
-    $duration = ($endTime - $startTime).TotalSeconds
-    
-    if ($duration -gt 0 -and $downloaded -gt 0) {
-        $speedMbps = [math]::Round(($downloaded * 8) / $duration / 1024 / 1024, 1)
-        return @{
-            Download = $speedMbps
-            Success = $true
-        }
-    }
-    
-    $pingTest = Test-Connection -ComputerName "8.8.8.8" -Count 3 -ErrorAction SilentlyContinue
-    if ($pingTest) {
-        $avgPing = [math]::Round(($pingTest | Measure-Object ResponseTime -Average).Average, 1)
-        return @{
-            Download = $null
-            Ping = $avgPing
-            Success = $true
-        }
-    }
-    
-    return @{
-        Download = $null
-        Ping = $null
-        Success = $false
-    }
-}
-
 function Scan-NetworkApps {
     Write-Host ""
     Write-Host "=== SCANNING NETWORK CONNECTIONS ===" -ForegroundColor Cyan
@@ -1102,7 +983,7 @@ function Stop-ChatVPN {
 function Show-MainMenu {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  VPN Network Controller v3.2" -ForegroundColor Cyan
+    Write-Host "  VPN Network Controller v3.1" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "[1] Scan Network   - Skanirovanie seti"
@@ -1111,8 +992,6 @@ function Show-MainMenu {
     Write-Host "[4] Collect IPs    - Sobrat IP s VPN"
     Write-Host "[5] Apply Routes  - Primenit sobrannye IP"
     Write-Host "[6] Reset Network - Prinudit vosstanovlenie"
-    Write-Host "[7] Optimize      - Optimizatsiya seti"
-    Write-Host "[8] Clean Routes   - Ochistit marshruty"
     Write-Host "[0] Exit"
     Write-Host ""
 }
@@ -1121,78 +1000,43 @@ function Clean-RoutesOnExit {
     Write-Host ""
     Write-Host "=== OCHISTKA MARSHRUTOV PRI VYHODE ===" -ForegroundColor Yellow
     
-    $recentFiles = Get-ChildItem $SnapshotsDir -Filter "proxy-collected-*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 3
-    
-    if ($recentFiles.Count -eq 0) {
-        Write-Status "Net fajlov s IP dlya ochistki" "info"
-        Write-Host "Optimizacii seti: sokhraneny" -ForegroundColor Green
-        return
+    $prefs = Get-AppPreferences
+    $viaVpnApps = @()
+    if ($prefs.apps) {
+        $prefs.apps.GetEnumerator() | Where-Object { $_.Value -eq "via_vpn" } | ForEach-Object {
+            $viaVpnApps += $_.Key
+        }
     }
     
-    $ipsToClean = @()
-    foreach ($file in $recentFiles) {
-        try {
-            $content = Get-Content $file.FullName -Raw | ConvertFrom-Json
-            if ($content.ips) {
-                $ipsToClean += $content.ips
+    if ($viaVpnApps.Count -gt 0) {
+        $deletedCount = 0
+        foreach ($app in $viaVpnApps) {
+            $routes = Get-NetRoute -ErrorAction SilentlyContinue | Where-Object { 
+                $_.DestinationPrefix -match "^\d+\.\d+\.\d+\.\d+/\d+$" -and 
+                $_.NextHop -notmatch "127\.0\.0\.1|::" 
             }
-        } catch { }
-    }
-    $ipsToClean = $ipsToClean | Select-Object -Unique
-    
-    Write-Host "IP dlya ochistki: $($ipsToClean.Count)" -ForegroundColor Cyan
-    
-    $deletedCount = 0
-    foreach ($ip in $ipsToClean) {
-        $null = route delete $ip mask 255.255.255.255 2>$null
-        $deletedCount++
-    }
-    
-    if ($deletedCount -gt 0) {
-        Write-Status "Udaleno marshrutov: $deletedCount" "success"
-    } else {
-        Write-Status "Net marshrutov dlya ochistki" "info"
+            
+            foreach ($route in $routes) {
+                try {
+                    $null = route delete $route.DestinationPrefix 2>$null
+                    $deletedCount++
+                } catch { }
+            }
+        }
+        
+        if ($deletedCount -gt 0) {
+            Write-Status "Udaleno marshrutov: $deletedCount" "success"
+        } else {
+            Write-Status "Net marshrutov dlya ochistki" "info"
+        }
     }
     
     Write-Host "Optimizacii seti: sokhraneny (ne sbrasyvayutsya)" -ForegroundColor Green
     
     $latestFile = Get-ChildItem $SnapshotsDir -Filter "proxy-collected-*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($latestFile) {
-        Write-Host "Snippets (poslednie IP): $($latestFile.Name)" -ForegroundColor Green
+        Write-Host "Snippets (poslednie IP): $latestFile" -ForegroundColor Green
     }
-}
-
-function Clean-AllProxyRoutes {
-    Write-Host ""
-    Write-Host "=== POLNAYA OCHISTKA VSEH MARSHRUTOV ===" -ForegroundColor Cyan
-    
-    $recentFiles = Get-ChildItem $SnapshotsDir -Filter "proxy-collected-*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 10
-    
-    if ($recentFiles.Count -eq 0) {
-        Write-Host "Net fajlov." -ForegroundColor Yellow
-        return
-    }
-    
-    $ipsToClean = @()
-    foreach ($file in $recentFiles) {
-        try {
-            $content = Get-Content $file.FullName -Raw | ConvertFrom-Json
-            if ($content.ips) {
-                $ipsToClean += $content.ips
-            }
-        } catch { }
-    }
-    $ipsToClean = $ipsToClean | Select-Object -Unique
-    
-    Write-Host " Ochischayetsya $($ipsToClean.Count) IP..." -ForegroundColor Yellow
-    
-    $deletedCount = 0
-    foreach ($ip in $ipsToClean) {
-        $null = route delete $ip mask 255.255.255.255 2>$null
-        $deletedCount++
-    }
-    
-    Write-Status "Udaleno marshrutov: $deletedCount" "success"
 }
 
 # Main menu loop
@@ -1208,21 +1052,6 @@ while ($true) {
     
     switch ($menuChoice) {
         "1" {
-            Write-Host ""
-            $speed = Test-NetworkSpeed
-            if ($speed.Success) {
-                Write-Host ""
-                Write-Host "=== SKOROST INTERNETA ===" -ForegroundColor Cyan
-                if ($speed.Download) {
-                    Write-Host "Skachivanie: $($speed.Download) Mbit/s" -ForegroundColor Green
-                }
-                if ($speed.Ping) {
-                    Write-Host "Ping: $($speed.Ping) ms" -ForegroundColor $(if ($speed.Ping -lt 50) { "Green" } elseif ($speed.Ping -lt 100) { "Yellow" } else { "Red" })
-                }
-            }
-            
-            Write-Host ""
-            Write-Host "=== SKANIROVANIE SETI ===" -ForegroundColor Cyan
             $apps = Scan-NetworkApps
             Show-NetworkAppsTable $apps
             Write-Host ""
@@ -1255,18 +1084,6 @@ while ($true) {
         }
         "6" {
             Invoke-NetworkReset
-            Write-Host ""
-            Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
-            Read-Host
-        }
-        "7" {
-            Optimize-NetworkSpeed
-            Write-Host ""
-            Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
-            Read-Host
-        }
-        "8" {
-            Clean-AllProxyRoutes
             Write-Host ""
             Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
             Read-Host

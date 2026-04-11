@@ -4,7 +4,7 @@
 
 [![Stars](https://img.shields.io/github/stars/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/stargazers)
 [![Forks](https://img.shields.io/github/forks/andreipromarketing-dev/vpn-network-reset?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/network/members)
-[![Download](https://img.shields.io/badge/Download-v3.1-blue?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/releases/tag/v3.1)
+[![Download](https://img.shields.io/badge/Download-v3.2-blue?style=flat-square)](https://github.com/andreipromarketing-dev/vpn-network-reset/releases/tag/v3.2)
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?style=flat-square)](https://github.com/PowerShell/PowerShell)
 [![Windows](https://img.shields.io/badge/Windows-10/11-green?style=flat-square)](https://www.microsoft.com/windows)
@@ -95,6 +95,72 @@
 | VPN protection | Автоматически отключает VPN адаптеры |
 | Preset restore | Восстанавливает сеть из сохранённых настроек |
 | Safe reset | Не затрагивает Bluetooth |
+| IP-прокси система | Сбор IP с VPN → маршруты для выбранных приложений |
+| Авто-мониторинг | Фоновая проверка IP с автоочисткой недоступных |
+| Тест скорости | Показывает пинг и скорость при сканировании сети |
+
+---
+
+## 🔀 IP-прокси система (v3.2)
+
+Когда VPN блокирует важные сайты, используйте собранные IP-адреса напрямую:
+
+### Workflow:
+1. **Включите VPN** (ChatVPN)
+2. **[4] Collect IPs** — скрипт собирает IP-адреса активных соединений
+3. **[2] Preferences** — выберите приложения для режима `[+]` (через собранные IP)
+4. **Выключите VPN**
+5. **[5] M** (Manual) — применяет доступные IP как маршруты
+6. **[5] A** (Auto) — автоматический режим с мониторингом каждые 15 сек
+
+### Режимы:
+- **Manual [M]** — проверяет TCP порты (80, 443, 8080), применяет только доступные IP
+- **Auto [A]** — работает в фоне, удаляет недоступные IP после 3 провалов
+
+### Пример:
+```
+[4] Collect → собрал 30 IP пока VPN был включён
+[2] Preferences → выбрал Telegram, Browser = [+]
+[5] M → применил 22 работающих IP
+Выключаю VPN → Telegram и Browser работают через собранные IP!
+```
+
+### Важно:
+- Работает когда VPN **выключен** (DIRECT маршруты конфликтуют с активным tun2socks)
+- При закрытии скрипта маршруты автоматически очищаются
+- Оптимизации сети сохраняются после закрытия
+- **[8] Clean Routes** - полная очистка ВСЕХ маршрутов (включая persistent)
+- Используйте [8] перед включением VPN если Telegram не работает
+
+### ⚠️ Ограничение IP-маршрутов
+
+IP-маршруты работают только для **незаблокированных** сервисов. Если провайдер (ISP) блокирует IP на уровне DPI (глубокий анализ пакетов), то прямой маршрут не поможет - нужен VPN туннель.
+
+**Почему:**
+- VPN шифрует трафик, ISP не видит какой сайт вы посещаете
+- Прямые IP-маршруты видны провайдеру, он может их заблокировать
+
+**Что работает:**
+- Google, Yandex, иностранные сайты - работают через IP-маршруты
+- Заблокированные сервисы (Telegram, WhatsApp) - нужен VPN
+
+Это техническое ограничение, а не проблема скрипта.
+
+---
+
+## 🔀 Меню
+
+| Кнопка | Функция |
+|--------|---------|
+| [1] Scan Network | Сканирование + тест скорости |
+| [2] Preferences | Настройки приложений |
+| [3] Show Prefs | Показать настройки |
+| [4] Collect IPs | Собрать IP с VPN |
+| [5] Apply Routes | Применить (M/Auto) |
+| [6] Reset Network | Сброс сети |
+| [7] Optimize | Оптимизация (без сброса) |
+| [8] Clean Routes | Очистить маршруты |
+| [0] Exit | Выход + очистка |
 
 ---
 

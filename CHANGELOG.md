@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.2] - 2026-04-09
+
+### Added
+- **Manual Route Mode** - Apply collected IPs with TCP port check (80, 443, 8080, 5222, 4433)
+- **Automatic Route Mode** - Background monitoring with auto-cleanup of unresponsive IPs (after 3 failures)
+- **Network Speed Test** - Shows download speed and ping when scanning network [1]
+- **Optimize Button [7]** - Manual network optimization without full reset
+- **Clean Routes Button [8]** - Full cleanup of all collected IP routes
+- **Exit Cleanup** - Automatic route cleanup on script exit (including Ctrl+C)
+- **IP-based Proxy System** - Collect IPs from active VPN → apply as direct routes for selected apps
+
+### Fixed
+- TCP port check replaced ICMP ping (more reliable for web servers behind firewalls)
+- Clean-RoutesOnExit now deletes only IPs from collected files (not all /32 routes)
+- Clean-AllProxyRoutes removes persistent routes that survive reboot
+- Menu items re-ordered with numbers (1-8 instead of letters)
+- Version updated to v3.2 in menu
+
+### Optimization
+- Auto mode checks every 15 seconds
+- Removes unresponsive IPs after 3 consecutive failures
+- Persistent routes (-p) survive reboot but cleaned on script exit or [8]
+
+### Known Limitations
+- IP routes only work for non-blocked services (ISP DPI can block direct IPs)
+- Telegram servers are blocked in Russia - need VPN for Telegram
+- Telegram internal MTProto proxy adds its own persistent routes
+- Use [8] Clean Routes before enabling VPN to clear conflicts
+- DIRECT routes may not work when ChatVPN is active (tun2socks intercepts at lower level)
+- Works best: VPN active → collect IPs → disable VPN → apply routes → use apps without VPN
+
+---
+
 ## [3.1] - 2026-04-07
 
 ### Added

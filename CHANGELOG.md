@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.3] - 2026-04-11
+
+### Added
+- **GoodbyeDPI Integration** - Button [9] for bypassing DPI (Deep Packet Inspection)
+- **Automatic Download** - Downloads GoodbyeDPI v2.0.89 from GitHub on first use
+- **6 DPI Bypass Modes**:
+  - [1] Presence only - Simple test mode
+  - [2] Silent discard - Recommended for Russia
+  - [3] Big packet - Large packets bypass
+  - [4] TTL change - Modifies TTL value
+  - [5] SNI remove - Strongest (removes SNI)
+  - [6] Mixed - For China
+- **Start/Stop GoodbyeDPI** - From menu
+- **Connection Test** - Test YouTube/Telegram/Google connectivity after DPI bypass
+
+### How GoodbyeDPI Works
+- Russian ISPs use DPI to inspect packets and block by SNI (Server Name Indication)
+- GoodbyeDPI masks traffic so ISP cannot detect target website
+- Works by removing/changing TLS SNI, modifying TCP options, fragmenting packets
+- Legal and safe - just bypasses traffic inspection
+
+### Fixed
+- [2] Renamed from "Preferences" to "Proxy Routes"
+- Version updated to v3.3 in menu
+
+---
+
 ## [3.2] - 2026-04-09
 
 ### Added

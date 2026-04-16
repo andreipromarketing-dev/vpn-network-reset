@@ -1,24 +1,21 @@
+# VPN Network Controller v3.5 - Interactive Menu Mode
 $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SnapshotsDir = Join-Path $ScriptDir "snapshots"
 $LastSnapshot = Join-Path $SnapshotsDir "last-known-good.json"
 $LogFile = Join-Path $ScriptDir "reset.log"
+$PreferencesFile = Join-Path $SnapshotsDir "preferences.json"
+$ProxyConfigFile = Join-Path $SnapshotsDir "proxies.json"
+$GoodbyeDPIDir = Join-Path $ScriptDir "goodbyedpi"
+$GoodbyeDPIExe = Join-Path $GoodbyeDPIDir "x86_64\goodbyedpi.exe"
+$CustomBlacklistFile = Join-Path $GoodbyeDPIDir "custom-blacklist.txt"
+$CustomSitelistFile = Join-Path $GoodbyeDPIDir "custom-sitelist.txt"
 
 if (-not (Test-Path $SnapshotsDir)) {
     New-Item -ItemType Directory -Path $SnapshotsDir | Out-Null
 }
 
-function Cleanup-OnExit {
-    $savedErrors = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    Clean-RoutesOnExit 2>$null
-    $ErrorActionPreference = $savedErrors
-}
-
-trap {
-    Cleanup-OnExit
-    exit 0
-}
+# Note: No auto-cleanup on exit to avoid conflicts
 
 function Write-Log($msg) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -71,6 +68,8 @@ function Optimize-NetworkSpeed {
     Write-Status "" "info"
     Write-Status "=== OPTIMIZING NETWORK SPEED ===" "info"
     
+    $adapter = Get-ActiveAdapter
+    
     Write-Status "[1/10] Setting TCP congestion provider..." "info"
     $tcpResult = netsh int tcp set supplemental template=internet congestionprovider=ctcp 2>&1
     Write-Status "   CTCP enabled" "success"
@@ -107,11 +106,64 @@ function Optimize-NetworkSpeed {
     
     Write-Status "" "info"
     Write-Status "Optimization complete! Reboot recommended." "success"
-    Write-Status "Current link speed: $((Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue).LinkSpeed)" "info"
+    if ($adapter) {
+        $adapterInfo = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
+        if ($adapterInfo) {
+            Write-Status "Current link speed: $($adapterInfo.LinkSpeed)" "info"
+        }
+    }
+}
+
+function Get-ActiveAdapter {
+    $wifiAdapter = Get-NetAdapter | Where-Object { $_.InterfaceType -eq 71 -and $_.Status -eq 'Up' } | Select-Object -First 1
+    if ($wifiAdapter) { return $wifiAdapter.Name }
+    
+    $connected = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Name -notmatch 'Tunnel|Virtual|Loopback|TAP|TUN|Bluetooth|NULL|isatap|Teredo' } | Select-Object -First 1
+    if ($connected) { return $connected.Name }
+    
+    return "Wi-Fi"
+}
+
+function Invoke-NetworkReset {
+    Write-Host ""
+    Write-Host "=== PRIORITY VOSSTANOVLENIE SETI ===" -ForegroundColor Cyan
+    
+    Write-Status "[1/5] Disabling VPN adapters..." "info"
+    Disable-AllVPNAdapters
+    Start-Sleep -Seconds 2
+    
+    Write-Status "[2/5] Renewing IP..." "info"
+    $adapter = Get-ActiveAdapter
+    if ($adapter) {
+        $null = ipconfig /release $adapter 2>$null
+        Start-Sleep -Seconds 1
+        $null = ipconfig /renew $adapter 2>$null
+        Start-Sleep -Seconds 3
+    }
+    
+    Write-Status "[3/5] Flushing DNS..." "info"
+    $null = ipconfig /flushdns 2>$null
+    
+    Write-Status "[4/5] Checking network..." "info"
+    if (Test-Network) {
+        Write-Status "Network restored!" "success"
+    } else {
+        Write-Status "Network still not working..." "warning"
+    }
+    
+    Write-Status "[5/5] Running optimizations..." "info"
+    Optimize-NetworkSpeed
+    
+    Write-Host ""
+    Write-Status "Reset complete." "success"
 }
 
 $PreferencesFile = Join-Path $SnapshotsDir "preferences.json"
 $ProxyConfigFile = Join-Path $SnapshotsDir "proxies.json"
+$GoodbyeDPIDir = Join-Path $ScriptDir "goodbyedpi"
+$GoodbyeDPIExe = Join-Path $GoodbyeDPIDir "x86_64\goodbyedpi.exe"
+$CustomBlacklistFile = Join-Path $GoodbyeDPIDir "custom-blacklist.txt"
+$CustomSitelistFile = Join-Path $GoodbyeDPIDir "custom-sitelist.txt"
 
 function Get-AppPreferences {
     if (Test-Path $PreferencesFile) {
@@ -244,8 +296,6 @@ function Apply-ProxyConfig($proxyUrl) {
             
             Write-Status "Setting Telegram proxy: $server`:$port" "info"
             
-            $telegramProxy = "https://tgram.dev/go?url=tg%3A%2F%2Fproxy%3Fserver%3D$server%26port%3D$port%26secret%3D$secret"
-            
             return @{
                 server = $server
                 port = $port
@@ -269,7 +319,6 @@ function Apply-TelegramProxy($proxy) {
         }
         
         if (Test-Path $telegramPath) {
-            $proxyParam = "-proxy=$($proxy.server):$($proxy.port)"
             Write-Status "Starting Telegram with proxy..." "info"
             Start-Process -FilePath $telegramPath -ArgumentList "-proxy=$($proxy.server):$($proxy.port)" -ErrorAction SilentlyContinue
             Write-Status "Telegram started with proxy: $($proxy.server):$($proxy.port)" "success"
@@ -289,7 +338,7 @@ function Collect-ProxyFromVPN {
         return
     }
     
-    $collected = @()
+    Write-Host "Sobirayus IP s aktivnyh soedinenij..." -ForegroundColor Yellow
     
     $connections = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | ForEach-Object {
         $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
@@ -326,102 +375,175 @@ function Collect-ProxyFromVPN {
     }
 }
 
-function Show-ProxyMenu {
+function Download-FreeProxies {
     Write-Host ""
-    Write-Host "=== PROXY NASTROJKI ===" -ForegroundColor Cyan
+    Write-Host "=== SKACHIVANIE BESPLATNYH PROXY ===" -ForegroundColor Cyan
     
-    $proxies = Get-ProxyConfig
+    $proxyUrls = @(
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt"
+    )
     
-    if ($proxies) {
-        Write-Host "Soyhranennye proxy:" -ForegroundColor Green
-        if ($proxies.telegram) {
-            foreach ($p in $proxies.telegram) {
-                Write-Host "  [Telegram] $($p.server):$($p.port)"
+    $proxies = @()
+    
+    foreach ($url in $proxyUrls) {
+        Write-Host "Skachivayus: $(Split-Path $url -Leaf)" -ForegroundColor Yellow
+        
+        try {
+            $curlPath = "C:\Windows\System32\curl.exe"
+            if (-not (Test-Path $curlPath)) {
+                $curlPath = "curl"
             }
-        }
-        if ($proxies.http) {
-            foreach ($p in $proxies.http) {
-                Write-Host "  [HTTP] $($p.server):$($p.port)"
-            }
-        }
-    } else {
-        Write-Host "Proxy ne sohraneny." -ForegroundColor Gray
-    }
-    
-    Write-Host ""
-    Write-Host "[1] Dobavit Telegram proxy (tg://...)"
-    Write-Host "[2] Dobavit HTTP/SOCKS proxy"
-    Write-Host "[3] Ochistit vse proxy"
-    Write-Host "[4] Zapustit Telegram s proxy"
-    Write-Host "[0] Nazad"
-    Write-Host ""
-    Write-Host "Vybor: " -ForegroundColor Yellow -NoNewline
-    $choice = Read-Host
-    
-    switch ($choice) {
-        "1" {
-            Write-Host "Vvedite tg:// proxy ssylku: " -ForegroundColor Yellow -NoNewline
-            $url = Read-Host
-            if ($url -match "tg://proxy\?server=(.+?)&port=(\d+)&secret=(.+)") {
-                $proxy = @{
-                    server = $matches[1]
-                    port = $matches[2]
-                    secret = $matches[3]
-                    url = $url
-                    added = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
-                }
-                
-                $currentProxies = Get-ProxyConfig
-                if (-not $currentProxies) { $currentProxies = @{ telegram = @() } }
-                if (-not $currentProxies.telegram) { $currentProxies.telegram = @() }
-                
-                $currentProxies.telegram += $proxy
-                Save-ProxyConfig $currentProxies
-                Write-Status "Telegram proxy dobavlen!" "success"
-            } else {
-                Write-Status "Nepravilnyj format. Ispolzuyte: tg://proxy?server=...&port=...&secret=..." "error"
-            }
-        }
-        "2" {
-            Write-Host "Server (ip ili hostname): " -ForegroundColor Yellow -NoNewline
-            $server = Read-Host
-            Write-Host "Port: " -ForegroundColor Yellow -NoNewline
-            $port = Read-Host
-            Write-Host "Tip (http/socks5): " -ForegroundColor Yellow -NoNewline
-            $type = Read-Host
             
-            if ($server -and $port) {
-                $proxy = @{
-                    server = $server
-                    port = $port
-                    type = $type
-                    added = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+            $tempFile = "$env:TEMP\proxies_$(Get-Random).txt"
+            & $curlPath -sL -o $tempFile $url --silent --max-time 60
+            
+            if ((Test-Path $tempFile) -and (Get-Item $tempFile).Length -gt 100) {
+                $content = Get-Content $tempFile
+                foreach ($line in $content) {
+                    if ($line -match "^(\S+://)?(\d+\.\d+\.\d+\.\d+):(\d+)") {
+                        $proxies += "$($matches[2]):$($matches[3])"
+                    }
                 }
-                
-                $currentProxies = Get-ProxyConfig
-                if (-not $currentProxies) { $currentProxies = @{ http = @() } }
-                if (-not $currentProxies.http) { $currentProxies.http = @() }
-                
-                $currentProxies.http += $proxy
-                Save-ProxyConfig $currentProxies
-                Write-Status "HTTP proxy dobavlen!" "success"
+                Remove-Item $tempFile -Force
             }
-        }
-        "3" {
-            if (Test-Path $ProxyConfigFile) {
-                Remove-Item $ProxyConfigFile -Force
-                Write-Status "Vse proxy ochisheny" "success"
-            }
-        }
-        "4" {
-            $proxies = Get-ProxyConfig
-            if ($proxies -and $proxies.telegram -and $proxies.telegram.Count -gt 0) {
-                Apply-TelegramProxy $proxies.telegram[0]
-            } else {
-                Write-Status "Net soyhranennyh Telegram proxy!" "warning"
-            }
+        } catch {
+            Write-Host "OSHIBKA: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
+    
+    $proxies = $proxies | Select-Object -Unique
+    
+    Write-Host "Naydeno proxy: $($proxies.Count)" -ForegroundColor Green
+    
+    if ($proxies.Count -gt 0) {
+        Write-Host "Proveryayu dostupnost..." -ForegroundColor Yellow
+        
+        $working = @()
+        $testCount = 0
+        $maxTests = 20
+        
+        foreach ($p in $proxies) {
+            if ($testCount -ge $maxTests) { break }
+            $testCount++
+            
+            $parts = $p.Split(':')
+            $ip = $parts[0]
+            $port = [int]$parts[1]
+            
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $result = $tcp.BeginConnect($ip, $port, $null, $null)
+                $wait = $result.AsyncWaitHandle.WaitOne(2000, $false)
+                
+                if ($wait -and $tcp.Connected) {
+                    $working += $p
+                    Write-Host "   [OK] $p" -ForegroundColor Green
+                }
+                $tcp.Close()
+            } catch { }
+        }
+        
+        Write-Host ""
+        Write-Host "Rabotayuschih: $($working.Count)" -ForegroundColor Cyan
+        
+        if ($working.Count -gt 0) {
+            $proxyData = @{
+                timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+                ipCount = $working.Count
+                type = "free_proxies"
+                ips = $working
+            }
+            
+            $proxyFile = Join-Path $SnapshotsDir "free-proxies-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+            $proxyData | ConvertTo-Json -Depth 3 | Out-File -FilePath $proxyFile -Encoding UTF8
+            Write-Status "Sohraneno: $proxyFile" "success"
+            
+            Write-Host ""
+            Write-Host "Rabotayuschie proxy:" -ForegroundColor Cyan
+            $working | Select-Object -First 10 | ForEach-Object { Write-Host "   $_" }
+        }
+    }
+}
+
+function Apply-FreeProxies {
+    Write-Host ""
+    Write-Host "=== PRIMENENIE SKACHANNYH PROXY ===" -ForegroundColor Cyan
+    
+    $proxyFiles = Get-ChildItem $SnapshotsDir -Filter "free-proxies-*.json" | Sort-Object LastWriteTime -Descending
+    
+    if ($proxyFiles.Count -eq 0) {
+        Write-Host "Net skachannyh proxy. Snachala skachajte [4]." -ForegroundColor Yellow
+        return
+    }
+    
+    $latestFile = $proxyFiles[0]
+    Write-Host "Ispolzuyu: $($latestFile.Name)" -ForegroundColor Green
+    
+    $content = Get-Content $latestFile.FullName -Raw | ConvertFrom-Json
+    $proxies = $content.ips
+    
+    Write-Host "Dostupno proxy: $($proxies.Count)" -ForegroundColor Cyan
+    
+    if ($proxies.Count -eq 0) {
+        Write-Host "Net rabotayuschih proxy!" -ForegroundColor Red
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "Nastrojka sistemnyh proxy..." -ForegroundColor Yellow
+    
+    $firstProxy = $proxies[0]
+    $proxyHost = $firstProxy.Split(":")[0]
+    $proxyPort = $firstProxy.Split(":")[1]
+    
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value "$proxyHost`:$proxyPort" -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1 -ErrorAction SilentlyContinue
+    
+    Write-Host "Proxy ustanovlen: $proxyHost`:$proxyPort" -ForegroundColor Green
+    
+    $env:HTTP_PROXY = "http://$proxyHost`:$proxyPort"
+    $env:HTTPS_PROXY = "http://$proxyHost`:$proxyPort"
+    
+    Write-Host ""
+    Write-Host "Proxy aktivirovan! Internet dolzhen idti cherez proxy." -ForegroundColor Cyan
+    Write-Host "Dlya otmeny: [8] Clean Routes" -ForegroundColor Gray
+}
+
+function Test-IPLatency($ip, $timeout = 2000) {
+    $testPorts = @(80, 443, 8080)
+    foreach ($port in $testPorts) {
+        try {
+            $tcpClient = New-Object System.Net.Sockets.TcpClient
+            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
+            $wait = $connect.AsyncWaitHandle.WaitOne($timeout, $false)
+            
+            if ($wait -and $tcpClient.Connected) {
+                $tcpClient.Close()
+                return 1
+            }
+            $tcpClient.Close()
+        } catch { }
+    }
+    return -1
+}
+
+function Test-IPAviaTCP($ip) {
+    $testPorts = @(80, 443, 8080, 5222, 4433)
+    foreach ($port in $testPorts) {
+        try {
+            $tcpClient = New-Object System.Net.Sockets.TcpClient
+            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
+            $wait = $connect.AsyncWaitHandle.WaitOne(1500, $false)
+            
+            if ($wait -and $tcpClient.Connected) {
+                $tcpClient.Close()
+                return $true
+            }
+            $tcpClient.Close()
+        } catch { }
+    }
+    return $false
 }
 
 function Show-CollectedIPsMenu {
@@ -431,7 +553,7 @@ function Show-CollectedIPsMenu {
     $collectedFiles = Get-ChildItem $SnapshotsDir -Filter "proxy-collected-*.json" | Sort-Object LastWriteTime -Descending
     
     if ($collectedFiles.Count -eq 0) {
-        Write-Host "Net sobrannyh fajlov. Ispolzujte [S] dlya sbora." -ForegroundColor Gray
+        Write-Host "Net sobrannyh fajlov. Ispolzujte [4] dlya sbora." -ForegroundColor Gray
         return
     }
     
@@ -478,45 +600,9 @@ function Show-CollectedIPsMenu {
     }
 }
 
-function Test-IPLatency($ip, $timeout = 2000) {
-    $testPorts = @(80, 443, 8080)
-    foreach ($port in $testPorts) {
-        try {
-            $tcpClient = New-Object System.Net.Sockets.TcpClient
-            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
-            $wait = $connect.AsyncWaitHandle.WaitOne($timeout, $false)
-            
-            if ($wait -and $tcpClient.Connected) {
-                $tcpClient.Close()
-                return 1
-            }
-            $tcpClient.Close()
-        } catch { }
-    }
-    return -1
-}
-
-function Test-IPAviaTCP($ip) {
-    $testPorts = @(80, 443, 8080, 5222, 4433)
-    foreach ($port in $testPorts) {
-        try {
-            $tcpClient = New-Object System.Net.Sockets.TcpClient
-            $connect = $tcpClient.BeginConnect($ip, $port, $null, $null)
-            $wait = $connect.AsyncWaitHandle.WaitOne(1500, $false)
-            
-            if ($wait -and $tcpClient.Connected) {
-                $tcpClient.Close()
-                return $true
-            }
-            $tcpClient.Close()
-        } catch { }
-    }
-    return $false
-}
-
 function Apply-CollectedIPsWithPingCheck($filePath) {
     Write-Host ""
-    Write-Host "=== PROVERKA PING I PRIMENENIE ===" -ForegroundColor Cyan
+    Write-Host "=== PROVERKA I PRIMENENIE IP ===" -ForegroundColor Cyan
     
     $content = Get-Content $filePath -Raw | ConvertFrom-Json
     
@@ -580,7 +666,7 @@ function Apply-CollectedIPsWithPingCheck($filePath) {
     
     $appliedCount = 0
     foreach ($result in $ipResults) {
-        if ($result.Latency -gt 0 -and $result.Latency -lt $threshold) {
+        if ($result.Status -eq "OK") {
             $existing = Get-NetRoute -DestinationPrefix "$($result.IP)/32" -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -notmatch "127\.0\.0\.1|::" }
             if (-not $existing) {
                 if ($wifiGateway) {
@@ -625,7 +711,7 @@ function Start-AutoMode($filePath) {
     Write-Host "IP adresov: $($content.ips.Count)"
     Write-Host ""
     Write-Host "Zapuskaju avtomaticheskij monitoring..." -ForegroundColor Green
-    Write-Host "Najmite [7] dlya ostanovki avtorezhima"
+    Write-Host "Najmite [8] dlya ostanovki avtorezhima"
     Write-Host ""
     
     $script:AutoModeRunning = $true
@@ -692,7 +778,7 @@ function Start-AutoMode($filePath) {
         
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true).Key
-            if ($key -eq "7") {
+            if ($key -eq "8") {
                 Write-Host ""
                 Write-Host "Avtomaticheskij rezhim ostanovlen." -ForegroundColor Yellow
                 $script:AutoModeRunning = $false
@@ -702,118 +788,281 @@ function Start-AutoMode($filePath) {
     }
 }
 
-function Invoke-NetworkReset {
+function Get-GoodbyeDPI {
     Write-Host ""
-    Write-Host "=== PRIORITY VOSSTANOVLENIE SETI ===" -ForegroundColor Cyan
+    Write-Host "=== SKACHIVANIE GOODBYEDPI ===" -ForegroundColor Cyan
     
-    Write-Status "[1/5] Disabling VPN adapters..." "info"
-    Disable-AllVPNAdapters
-    Start-Sleep -Seconds 2
-    
-    Write-Status "[2/5] Renewing IP..." "info"
-    $adapter = Get-ActiveAdapter
-    if ($adapter) {
-        $null = ipconfig /release $adapter 2>$null
-        Start-Sleep -Seconds 1
-        $null = ipconfig /renew $adapter 2>$null
-        Start-Sleep -Seconds 3
+    if (-not (Test-Path $GoodbyeDPIDir)) {
+        New-Item -ItemType Directory -Path $GoodbyeDPIDir | Out-Null
     }
     
-    Write-Status "[3/5] Flushing DNS..." "info"
-    $null = ipconfig /flushdns 2>$null
-    
-    Write-Status "[4/5] Checking network..." "info"
-    if (Test-Network) {
-        Write-Status "Network restored!" "success"
-    } else {
-        Write-Status "Network still not working..." "warning"
+    if (Test-Path $GoodbyeDPIExe) {
+        Write-Status "GoodbyeDPI already exists" "info"
+        return $true
     }
     
-    Write-Status "[5/5] Running optimizations..." "info"
-    Optimize-NetworkSpeed
+    Write-Status "Trying alternative download methods..." "info"
     
-    Write-Host ""
-    Write-Status "Reset complete." "success"
-}
-
-function Add-DirectRoute($ip) {
-    if ($ip -match "^(\d+\.\d+\.\d+\.\d+)$") {
-        $existing = Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -notmatch "127\.0\.0\.1|::" }
-        if (-not $existing) {
-            $wifiGateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch "ChatVPN|VPN|Tunnel" } | Select-Object -First 1).NextHop
-            if ($wifiGateway) {
-                $result = route add $ip mask 255.255.255.255 $wifiGateway metric 5 -p 2>&1
-            } else {
-                $result = route add $ip mask 255.255.255.255 0.0.0.0 metric 5 -p 2>&1
-            }
-            if ($result -notmatch "already exists|уже существует") {
-                Write-Status "   Added route for $ip via $wifiGateway" "info"
-            }
-        }
-    }
-}
-
-function Remove-DirectRoutes {
-    $prefs = Get-AppPreferences
-    $wifiGateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch "ChatVPN|VPN|Tunnel" } | Select-Object -First 1).NextHop
+    $urls = @(
+        "https://github.com/ValdikSS/GoodbyeDPI/releases/download/v0.2.2/goodbyedpi-0.2.2.zip",
+        "https://github.com/ValdikSS/GoodbyeDPI/releases/download/0.2.2/goodbyedpi-0.2.2.zip"
+    )
     
-    if ($prefs.apps) {
-        $prefs.apps.GetEnumerator() | Where-Object { $_.Value -eq "direct" } | ForEach-Object {
-            $appName = $_.Key
-            $connections = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | ForEach-Object {
-                $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
-                if ($proc -and $proc.ProcessName -eq $appName) {
-                    return $_.RemoteAddress
-                }
-            } | Select-Object -Unique
+    $zipPath = Join-Path $ScriptDir "goodbyedpi.zip"
+    
+    foreach ($zipUrl in $urls) {
+        $fileName = $zipUrl -split '/' | Select-Object -Last 1
+        Write-Status "Trying: $fileName" "info"
+        
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            [Net.ServicePointManager]::DefaultConnectionLimit = 12
             
-            foreach ($ip in $connections) {
-                if ($ip -notmatch "^::|127\.|0\.0\.0\.0") {
-                    route delete $ip mask 255.255.255.255 $wifiGateway 2>$null | Out-Null
-                    route delete $ip mask 255.255.255.255 2>$null | Out-Null
+            $webClient = New-Object System.Net.WebClient
+            $webClient.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            $webClient.DownloadFile($zipUrl, $zipPath)
+            
+            if ((Test-Path $zipPath) -and (Get-Item $zipPath).Length -gt 10000) {
+                Write-Status "Downloaded! Size: $((Get-Item $zipPath).Length / 1KB) KB" "success"
+                
+                Expand-Archive -Path $zipPath -DestinationPath $GoodbyeDPIDir -Force
+                
+                $extractedExe = Join-Path $GoodbyeDPIDir "goodbyedpi.exe"
+                if (-not (Test-Path $extractedExe)) {
+                    $files = Get-ChildItem $GoodbyeDPIDir -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
+                    if ($files.Count -gt 0) {
+                        $extractedExe = $files[0].FullName
+                    }
+                }
+                
+                if (Test-Path $extractedExe) {
+                    Write-Status "GoodbyeDPI ready!" "success"
+                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                    return $true
                 }
             }
+        } catch {
+            Write-Status "Failed: $($_.Exception.Message)" "warning"
         }
     }
     
-    $dnsServers = @("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "208.67.222.222", "8.26.56.26", "8.20.247.20")
-    foreach ($dns in $dnsServers) {
-        route delete $dns mask 255.255.255.255 $wifiGateway 2>$null | Out-Null
+    Write-Status "Trying curl.exe fallback..." "info"
+    
+    $curlPath = "C:\Windows\System32\curl.exe"
+    if (-not (Test-Path $curlPath)) {
+        $curlPath = "curl"
     }
     
-    Write-Status "Direct routes cleared" "success"
+    try {
+        $tempZip = "$env:TEMP\goodbyedpi.zip"
+        & $curlPath -L -o $tempZip "https://github.com/ValdikSS/GoodbyeDPI/releases/download/v0.2.2/goodbyedpi-0.2.2.zip" --silent --max-time 120
+        
+        if ((Test-Path $tempZip) -and (Get-Item $tempZip).Length -gt 10000) {
+            Write-Status "Downloaded via curl! Size: $((Get-Item $tempZip).Length / 1KB) KB" "success"
+            Copy-Item $tempZip $zipPath -Force
+            Expand-Archive -Path $zipPath -DestinationPath $GoodbyeDPIDir -Force
+            
+            $extractedExe = Join-Path $GoodbyeDPIDir "goodbyedpi.exe"
+            if (-not (Test-Path $extractedExe)) {
+                $files = Get-ChildItem $GoodbyeDPIDir -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
+                if ($files.Count -gt 0) {
+                    $extractedExe = $files[0].FullName
+                }
+            }
+            
+            if (Test-Path $extractedExe) {
+                Write-Status "GoodbyeDPI ready!" "success"
+                Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                return $true
+            }
+        }
+    } catch {
+        Write-Status "Curl failed: $($_.Exception.Message)" "warning"
+    }
+    
+    Write-Host ""
+    Write-Status "Auto-download failed. Possible causes:" "error"
+    Write-Status "  - Internet connection blocked" "info"
+    Write-Status "  - VPN/Proxy interference" "info"
+    Write-Status "  - GitHub access restricted" "info"
+    Write-Host ""
+    Write-Host "=== MANUAL SETUP ===" -ForegroundColor Yellow
+    Write-Host "1. Open browser and go to:" -ForegroundColor White
+    Write-Host "   https://github.com/ValdikSS/GoodbyeDPI/releases" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "2. Download: goodbyedpi-0.2.2.zip" -ForegroundColor White
+    Write-Host ""
+    Write-Host "3. Extract ZIP contents to:" -ForegroundColor White
+    Write-Host "   $GoodbyeDPIDir" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "4. Run this script again" -ForegroundColor White
+    Write-Host ""
+    
+    return $false
 }
 
-function Clear-AllDirectRoutes {
-    $wifiGateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch "ChatVPN|VPN|Tunnel" } | Select-Object -First 1).NextHop
-    if (-not $wifiGateway) { 
-        Write-Status "Cannot find WiFi gateway! Try restarting router." "error"
-        return 
+function Start-GoodbyeDPI {
+    param(
+        [string]$Mode = "2",
+        [string]$ProxyHost = "",
+        [int]$ProxyPort = 0,
+        [string]$ProxyType = ""
+    )
+    
+    if (-not (Test-Path $GoodbyeDPIExe)) {
+        $downloaded = Get-GoodbyeDPI
+        if (-not $downloaded) {
+            Write-Status "Cannot download GoodbyeDPI!" "error"
+            return $false
+        }
     }
     
-    $prefs = Get-AppPreferences
-    $allIPs = @()
-    
-    if ($prefs.apps) {
-        $prefs.apps.GetEnumerator() | ForEach-Object { $allIPs += $_.Key }
+    $running = Get-Process -Name "goodbyedpi" -ErrorAction SilentlyContinue
+    if ($running) {
+        Write-Status "GoodbyeDPI already running (PID: $($running.Id))" "info"
+        return $true
     }
     
-    $dnsServers = @("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1")
-    $allIPs += $dnsServers
+    Write-Host ""
+    Write-Host "=== ZAPUSK GOODBYEDPI (REZHIM: $Mode) ===" -ForegroundColor Cyan
     
-    Write-Status "Cleaning routes via $wifiGateway..." "warning"
+    $customBlacklist = Join-Path $GoodbyeDPIDir "custom-blacklist.txt"
+    $russiaBlacklist = Join-Path $GoodbyeDPIDir "russia-blacklist.txt"
     
-    foreach ($ip in $allIPs) {
-        route delete $ip mask 255.255.255.255 $wifiGateway 2>$null | Out-Null
+    $blacklistArg = "--blacklist `"$russiaBlacklist`""
+    if (Test-Path $customBlacklist) {
+        $blacklistArg = "--blacklist `"$customBlacklist`""
+        Write-Status "Using custom blacklist (ChatGPT, Claude, Perplexity)" "info"
     }
     
-    Write-Status "Routes cleared. Wait 5 sec..." "info"
-    Start-Sleep -Seconds 5
+    $proxyArg = ""
+    if ($ProxyHost -and $ProxyPort -gt 0) {
+        if ($ProxyType -eq "socks5") {
+            $proxyArg = "--portable-proxy 127.0.0.1:8888"
+            Write-Status "Will use SOCKS5 proxy: $ProxyHost`:$ProxyPort" "info"
+        } else {
+            $proxyArg = "--portable-proxy 127.0.0.1:8888"
+            Write-Status "Will use HTTP proxy: $ProxyHost`:$ProxyPort" "info"
+        }
+    }
     
-    if (Test-Network) {
-        Write-Status "Internet OK!" "success"
+    $exePath = $GoodbyeDPIExe
+    
+    $dpiArgs = switch ($Mode) {
+        "1" { "-5 $blacklistArg --dns-addr 77.88.8.8 --dns-port 1253 $proxyArg" }
+        "2" { "-5 $blacklistArg --dns-addr 77.88.8.8 --dns-port 1253 $proxyArg" }
+        "3" { "-2 $proxyArg" }
+        "4" { "-5 --dns-addr 77.88.8.8 --dns-port 1253 $proxyArg" }
+        "5" { "--set-ttl 58 --auto-ttl $proxyArg" }
+        "6" { "-9 $proxyArg" }
+        default { "-5 $blacklistArg --dns-addr 77.88.8.8 --dns-port 1253 $proxyArg" }
+    }
+    
+    try {
+        Write-Status "Running: goodbyedpi.exe $dpiArgs" "info"
+        
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exePath
+        $psi.Arguments = $dpiArgs
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        Start-Sleep -Seconds 3
+        
+        if ($ProxyHost -and $ProxyPort -gt 0) {
+            Write-Status "Starting proxy forwarder..." "info"
+            Start-Process "netsh" -ArgumentList "interface portproxy add v4tov4 listenport=8888 connectaddress=$ProxyHost connectport=$ProxyPort" -WindowStyle Hidden -ErrorAction SilentlyContinue
+        }
+        
+        $running = Get-Process -Name "goodbyedpi" -ErrorAction SilentlyContinue
+        if ($running) {
+            Write-Status "GoodbyeDPI running! (PID: $($running.Id))" "success"
+            if ($ProxyHost) {
+                Write-Host "Traffic will go through proxy: $ProxyHost`:$ProxyPort" -ForegroundColor Green
+            } else {
+                Write-Host "ChatGPT, Claude, Perplexity, YouTube should work now!" -ForegroundColor Green
+            }
+            return $true
+        }
+    } catch {
+        Write-Status "Failed to start: $($_.Exception.Message)" "error"
+    }
+    
+    return $false
+}
+
+function Stop-GoodbyeDPI {
+    Write-Host ""
+    Write-Host "=== OSTANOVKA GOODBYEDPI ===" -ForegroundColor Cyan
+    
+    $procs = Get-Process -Name "goodbyedpi" -ErrorAction SilentlyContinue
+    if ($procs) {
+        foreach ($p in $procs) {
+            Write-Status "Stopping PID: $($p.Id)" "info"
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        }
+        Write-Status "GoodbyeDPI stopped" "success"
     } else {
-        Write-Status "No internet! Restart router manually!" "error"
+        Write-Status "Not running" "info"
+    }
+}
+
+function Show-GoodbyeDPIMenu {
+    Write-Host ""
+    Write-Host "=== GOODBYEDPI - OBHOD DPI ===" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "DPI = Deep Packet Inspection (inspekciya traffika)." -ForegroundColor White
+    Write-Host "GoodbyeDPI skryvaet SNI - provider ne vidit сайты." -ForegroundColor White
+    Write-Host ""
+    Write-Host "VNIMANIE: Geoblokirovannye saity (ChatGPT, YouTube" -ForegroundColor Yellow
+    Write-Host "v Rossii) GoodbyeDPI NE obhodit - nuzhen VPN!" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "=== REZHIMY RABOTY ===" -ForegroundColor Cyan
+    Write-Host "[1] Russia        - Blacklist + DNS (dlya DPI)"
+    Write-Host "[2] Universal     - Universalnyj rezhim"
+    Write-Host "[3] DNS Only       - Tolko DNS redirect"
+    Write-Host ""
+    Write-Host "[S] Start"
+    Write-Host "[K] Stop"
+    Write-Host "[T] Test connection"
+    Write-Host "[0] Nazad"
+    Write-Host ""
+    Write-Host "Viberite punkt: " -ForegroundColor Yellow -NoNewline
+    $choice = Read-Host
+    
+    switch ($choice) {
+        "1" { Start-GoodbyeDPI -Mode "2" }
+        "2" { Start-GoodbyeDPI -Mode "3" }
+        "3" { Start-GoodbyeDPI -Mode "4" }
+        "s" { Start-GoodbyeDPI -Mode "2" }
+        "k" { Stop-GoodbyeDPI }
+        "t" {
+            Write-Host ""
+            Write-Host "Testing sites..." -ForegroundColor Cyan
+            
+            $tests = @(
+                @{ name = "Telegram"; host = "telegram.org" },
+                @{ name = "Google"; host = "google.com" }
+            )
+            
+            foreach ($test in $tests) {
+                try {
+                    $result = Test-NetConnection -ComputerName $test.host -Port 443 -WarningAction SilentlyContinue
+                    if ($result.TcpTestSucceeded) {
+                        Write-Host "   [$($test.name)] OK" -ForegroundColor Green
+                    } else {
+                        Write-Host "   [$($test.name)] BLOCKED" -ForegroundColor Red
+                    }
+                } catch {
+                    Write-Host "   [$($test.name)] ERROR" -ForegroundColor Red
+                }
+            }
+        }
     }
 }
 
@@ -892,45 +1141,43 @@ function Test-Network {
 }
 
 function Test-NetworkSpeed {
-    Write-Host "Izmerenie skorosti interneta..." -ForegroundColor Yellow
-    
-    $testServer = "speedtest.t-online.de"
-    $testFile = "random4000x4000.jpg"
-    $tempFile = "$env:TEMP\speedtest_temp.dat"
-    
-    $startTime = Get-Date
-    $downloaded = 0
-    
-    try {
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile("https://$testServer/$testFile", $tempFile)
-        
-        if (Test-Path $tempFile) {
-            $fileInfo = Get-Item $tempFile
-            $downloaded = $fileInfo.Length
-            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-        }
-    } catch {
-        try {
-            $response = Invoke-WebRequest -Uri "https://speed.cloudflare.com/__down?bytes=10000000" -UseBasicParsing -TimeoutSec 10
-            $downloaded = $response.Content.Length
-        } catch { }
-    }
-    
-    $endTime = Get-Date
-    $duration = ($endTime - $startTime).TotalSeconds
-    
-    if ($duration -gt 0 -and $downloaded -gt 0) {
-        $speedMbps = [math]::Round(($downloaded * 8) / $duration / 1024 / 1024, 1)
-        return @{
-            Download = $speedMbps
-            Success = $true
-        }
-    }
+    Write-Host "Proveryayu skorost interneta..." -ForegroundColor Yellow
     
     $pingTest = Test-Connection -ComputerName "8.8.8.8" -Count 3 -ErrorAction SilentlyContinue
     if ($pingTest) {
         $avgPing = [math]::Round(($pingTest | Measure-Object ResponseTime -Average).Average, 1)
+        Write-Host "Ping: $avgPing ms" -ForegroundColor Green
+        
+        try {
+            $wc = New-Object System.Net.WebClient
+            $wc.Proxy = $null
+            $startTime = Get-Date
+            $tempFile = "$env:TEMP\speedtest_$PID.dat"
+            
+            $null = $wc.DownloadFileTaskAsync("https://speed.cloudflare.com/__down?bytes=5000000", $tempFile)
+            Start-Sleep -Seconds 3
+            $wc.CancelAsync()
+            
+            if (Test-Path $tempFile) {
+                $fileInfo = Get-Item $tempFile
+                $downloaded = $fileInfo.Length
+                Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+                
+                $endTime = Get-Date
+                $duration = ($endTime - $startTime).TotalSeconds
+                
+                if ($duration -gt 0.5 -and $downloaded -gt 10000) {
+                    $speedMbps = [math]::Round(($downloaded * 8) / $duration / 1024 / 1024, 1)
+                    Write-Host "Skachivanie: $speedMbps Mbit/s" -ForegroundColor Green
+                    return @{
+                        Download = $speedMbps
+                        Ping = $avgPing
+                        Success = $true
+                    }
+                }
+            }
+        } catch { }
+        
         return @{
             Download = $null
             Ping = $avgPing
@@ -938,6 +1185,7 @@ function Test-NetworkSpeed {
         }
     }
     
+    Write-Host "Set ne dostupna!" -ForegroundColor Red
     return @{
         Download = $null
         Ping = $null
@@ -1102,17 +1350,18 @@ function Stop-ChatVPN {
 function Show-MainMenu {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  VPN Network Controller v3.2" -ForegroundColor Cyan
+    Write-Host "  VPN Network Controller v3.5" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "[1] Scan Network   - Skanirovanie seti"
-    Write-Host "[2] Preferences    - Nastrojki programm"
+    Write-Host "[2] Proxy Routes   - Nastrojki programm"
     Write-Host "[3] Show Prefs     - Pokazat nastrojki"
-    Write-Host "[4] Collect IPs    - Sobrat IP s VPN"
-    Write-Host "[5] Apply Routes  - Primenit sobrannye IP"
+    Write-Host "[4] Free Proxies   - Skachat besplatnye proxy"
+    Write-Host "[5] Apply Proxy    - Primenit skachanny proxy"
     Write-Host "[6] Reset Network - Prinudit vosstanovlenie"
     Write-Host "[7] Optimize      - Optimizatsiya seti"
-    Write-Host "[8] Clean Routes   - Ochistit marshruty"
+    Write-Host "[8] Clean Routes  - Ochistit marshruty"
+    Write-Host "[G] GoodbyeDPI   - Obhod DPI"
     Write-Host "[0] Exit"
     Write-Host ""
 }
@@ -1195,18 +1444,20 @@ function Clean-AllProxyRoutes {
     Write-Status "Udaleno marshrutov: $deletedCount" "success"
 }
 
-# Main menu loop
+
+
+# ============ MENU MODE ============
 while ($true) {
     Show-MainMenu
     
     $input = Read-Host "Viberite punkt"
     if ([string]::IsNullOrWhiteSpace($input)) {
         $menuChoice = ""
-    } else {
+} else {
         $menuChoice = $input.Trim().ToLower()
     }
     
-    switch ($menuChoice) {
+switch ($menuChoice) {
         "1" {
             Write-Host ""
             $speed = Test-NetworkSpeed
@@ -1242,13 +1493,13 @@ while ($true) {
             Read-Host
         }
         "4" {
-            Collect-ProxyFromVPN
+            Download-FreeProxies
             Write-Host ""
             Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
             Read-Host
         }
         "5" {
-            Show-CollectedIPsMenu
+            Apply-FreeProxies
             Write-Host ""
             Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
             Read-Host
@@ -1271,6 +1522,18 @@ while ($true) {
             Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
             Read-Host
         }
+        "g" {
+            Show-GoodbyeDPIMenu
+            Write-Host ""
+            Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
+            Read-Host
+        }
+        "G" {
+            Show-GoodbyeDPIMenu
+            Write-Host ""
+            Write-Host "Najmite Enter dlja prodolzhenija..." -ForegroundColor Gray
+            Read-Host
+        }
         "0" {
             Write-Host ""
             Write-Host "Vyhod iz programmy..." -ForegroundColor Yellow
@@ -1282,14 +1545,19 @@ while ($true) {
             Write-Host "Do svidaniya!" -ForegroundColor Cyan
             exit 0
         }
-        "" {
-        }
-        default {
-            Write-Host "Nepravilnyj punkt" -ForegroundColor Red
+"" {
         }
     }
 }
+# Auto-reset mode runs if menu mode is disabled
+if ($args.Count -gt 0 -and $args[0] -eq "-Auto") {
+    goto :AutoReset
+}
 
+# Exit menu mode if running auto-reset
+exit 0
+
+:AutoReset
 Write-Log "===== Network Auto-Reset Started ====="
 $adapter = Get-ActiveAdapter
 Write-Status "Detected adapter: $adapter" "info"
@@ -1310,7 +1578,7 @@ if (Test-Network) {
     }
     
     Write-Host ""
-    Write-Status "=== OPTIMIZING NETWORK SPEED (SET RABOTAET) ===" "info"
+    Write-Status "=== OPTIMIZING NETWORK SPEED ===" "info"
     Optimize-NetworkSpeed
     
     Write-Log "Network working, optimized"
@@ -1318,6 +1586,133 @@ if (Test-Network) {
     pause
     exit 0
 }
+
+Write-Status "Network is DOWN. Starting reset..." "warning"
+
+Write-Status "" "info"
+Write-Status "=== STEP 1: DNS & IP Reset ===" "info"
+
+Write-Status "[1/8] Disabling VPN adapters..." "info"
+Disable-AllVPNAdapters
+
+Write-Status "[2/8] Restarting network adapter..." "info"
+Disable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+Enable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction SilentlyContinue
+
+if (-not (Wait-AdapterReady $adapter 15)) {
+    Write-Status "   Adapter did not come up in time" "warning"
+}
+
+Write-Status "[3/8] Flushing DNS..." "info"
+ipconfig /flushdns 2>$null
+
+Write-Status "[4/8] Releasing IP..." "info"
+$releaseResult = ipconfig /release $adapter 2>&1
+if ($releaseResult -match "No operation|не удается|error") {
+    Write-Status "   Release skipped (adapter not ready)" "info"
+}
+
+Start-Sleep -Seconds 2
+
+Write-Status "[5/8] Renewing IP..." "info"
+$renewResult = ipconfig /renew $adapter 2>&1
+if ($renewResult -match "No operation|не удается|error") {
+    Write-Status "   Renew skipped (adapter not ready)" "info"
+}
+
+Write-Status "[6/8] Setting Google DNS..." "info"
+$dnsResult1 = netsh interface ip set dns "$adapter" static 8.8.8.8 2>&1
+if ($dnsResult1 -match "error|Error|ошибка") {
+    Write-Status "   Primary DNS failed, retrying..." "warning"
+    Start-Sleep -Seconds 2
+    $dnsResult1 = netsh interface ip set dns "$adapter" static 8.8.8.8 2>&1
+}
+$dnsResult2 = netsh interface ip add dns "$adapter" 1.1.1.1 index=2 2>&1
+
+Write-Status "[7/8] Clearing proxy..." "info"
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value "" -ErrorAction SilentlyContinue
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
+
+Write-Status "[8/8] Waiting for network..." "info"
+Start-Sleep -Seconds 10
+
+if (Test-Network) {
+    Write-Host ""
+    Write-Status "[SUCCESS] Network restored!" "success"
+    $current = Get-NetworkSnapshot
+    Save-Snapshot $current
+    Clean-OldSnapshots 50
+    Optimize-NetworkSpeed
+    Write-Log "Success - network restored after Step 1"
+    pause
+    exit 0
+}
+
+Write-Status "" "info"
+Write-Status "=== STEP 2: Trying Saved Presets ===" "info"
+
+if (Apply-Presets -Adapter $adapter) {
+    Write-Host ""
+    Write-Status "[SUCCESS] Network restored via preset!" "success"
+    $current = Get-NetworkSnapshot
+    Save-Snapshot $current
+    Clean-OldSnapshots 50
+    Optimize-NetworkSpeed
+    Write-Log "Success - network restored via preset"
+    pause
+    exit 0
+}
+
+Write-Status "" "info"
+Write-Status "=== STEP 3: Aggressive Reset ===" "info"
+
+Write-Status "[1/4] Disabling VPN adapters..." "info"
+Disable-AllVPNAdapters
+
+Write-Status "[2/4] Resetting Winsock..." "info"
+netsh winsock reset 2>$null
+
+Write-Status "[3/4] Resetting TCP/IP..." "info"
+netsh int ip reset 2>$null
+
+Write-Status "[4/4] Final adapter restart..." "info"
+Disable-NetAdapter -Name $adapter -Confirm:$false 2>$null
+Start-Sleep -Seconds 3
+Enable-NetAdapter -Name $adapter -Confirm:$false 2>$null
+Start-Sleep -Seconds 3
+Wait-AdapterReady $adapter 15 | Out-Null
+
+Start-Sleep -Seconds 15
+
+if (Test-Network) {
+    Write-Host ""
+    Write-Status "[SUCCESS] Network restored!" "success"
+    $current = Get-NetworkSnapshot
+    Save-Snapshot $current
+    Clean-OldSnapshots 50
+    Optimize-NetworkSpeed
+    Write-Log "Success - network restored after Step 3"
+    pause
+    exit 0
+}
+
+Write-Host ""
+Write-Status "[FAILED] Network still down." "error"
+Write-Status "" "info"
+Write-Status "Manual steps:" "info"
+Write-Status "  1. Unplug router for 30 sec" "info"
+Write-Status "  2. Disconnect VPN manually" "info"
+Write-Status "  3. Restart computer" "info"
+
+Write-Log "===== Network Reset FAILED ====="
+
+Write-Status "" "info"
+Write-Status "Cleaning up old snapshots..." "info"
+Clean-OldSnapshots 50
+
+pause
+exit 1
 
 Write-Status "Network is DOWN. Starting reset..." "warning"
 

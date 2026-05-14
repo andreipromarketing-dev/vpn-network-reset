@@ -50,10 +50,23 @@ function Test-Network {
 }
 
 function Get-ActiveAdapter {
+    # 1st: Up physical adapters (WiFi/ethernet only)
     $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceType -in @(71, 6) -and $_.Name -notmatch 'Tunnel|Virtual|Loopback|TAP|TUN|Bluetooth|isatap|Teredo' } | Select-Object -First 1
     if ($adapter) { return $adapter.Name }
+    
+    # 2nd: any Up adapter (no virtual)
     $fallback = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Name -notmatch 'Virtual|Tunnel' } | Select-Object -First 1
-    return $fallback.Name
+    if ($fallback) { return $fallback.Name }
+    
+    # 3rd: physical adapters even if Disabled/Disconnected
+    $phys = Get-NetAdapter | Where-Object { $_.InterfaceType -in @(71, 6) -and $_.Name -notmatch 'Tunnel|Virtual|Loopback|Bluetooth' } | Select-Object -First 1
+    if ($phys) { return $phys.Name }
+    
+    # 4th: any non-virtual adapter as last resort
+    $any = Get-NetAdapter | Where-Object { $_.Name -notmatch 'Virtual|Tunnel|Loopback|Bluetooth' } | Select-Object -First 1
+    if ($any) { return $any.Name }
+    
+    return $null
 }
 
 function Get-NetworkSnapshot {
@@ -161,11 +174,45 @@ function Optimize-NetworkSpeed {
 function Invoke-NetworkReset {
     Write-Host ""; Write-Host "=== PRIORITY NETWORK RECOVERY ===" -ForegroundColor Cyan; Write-Log "Starting network reset" "info"
     $adapter = Get-ActiveAdapter
-    if (-not $adapter) { Write-Status "No active adapter found!" "error"; Write-Log "Reset aborted: no adapter" "error"; return $false }
+    if (-not $adapter) { Write-Status "No adapter found at all!" "error"; Write-Log "Reset aborted: no adapter" "error"; return $false }
+    
+    # Check adapter status and try to enable if Disabled/Disconnected
+    $adapterObj = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
+    if ($adapterObj) {
+        if ($adapterObj.Status -ne 'Up') {
+            Write-Status "Adapter is $($adapterObj.Status) — attempting to enable..." "warning"
+            try {
+                Enable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction Stop
+                Write-Status "Adapter enabled, waiting to come up..." "info"
+                Start-Sleep -Seconds 3
+            } catch { Write-Log "Failed to enable adapter: $_" "warning" }
+        }
+        # Try WiFi auto-connect if this is a wireless adapter and not connected to any SSID
+        if ($adapterObj.InterfaceType -eq 71) {
+            $wlanInfo = netsh wlan show interfaces 2>$null | Out-String
+            if ($wlanInfo -notmatch "SSID\s*:\s*.+") {
+                Write-Status "WiFi not connected — scanning for known networks..." "warning"
+                $profiles = netsh wlan show profiles 2>$null | Out-String
+                if ($profiles -match "All User Profile\s*:\s*(.+)") {
+                    $ssid = $matches[1].Trim().Split("`n")[0].Trim()
+                    Write-Status "Trying to connect to $ssid..." "info"
+                    $null = netsh wlan connect name="$ssid" 2>&1 | Out-Null
+                    Start-Sleep -Seconds 3
+                }
+            }
+        }
+    }
+    
+    if (-not (Wait-AdapterReady -Adapter $adapter -Timeout 10)) {
+        Write-Status "Adapter not ready, trying any available adapter..." "warning"
+        $adapter = Get-ActiveAdapter
+        if (-not $adapter) { Write-Status "Still no usable adapter" "error"; return $false }
+    }
+    
     Write-Status "Using adapter: $adapter" "info"
     Write-Status "[1/5] Disabling VPN adapters..." "info"; Disable-AllVPNAdapters; Start-Sleep -Seconds 2
     Write-Status "[2/5] Renewing IP..." "info"; try { $null = ipconfig /release $adapter 2>&1 | Out-Null; Start-Sleep -Seconds 1; $null = ipconfig /renew $adapter 2>&1 | Out-Null; Start-Sleep -Seconds 3 } catch { Write-Log "IP renew warning: $_" "warning" }
-    Write-Status "[3/5] Flushing DNS..." "info"; $null = ipconfig /flushdns 2>&1 | Out-Null
+    Write-Status "[3/5] Flushing DNS & restoring presets..." "info"; $null = ipconfig /flushdns 2>&1 | Out-Null; Apply-Presets -Adapter $adapter | Out-Null
     Write-Status "[4/5] Checking network..." "info"; if (Test-Network) { Write-Status "Network restored!" "success"; Write-Log "Network restored" "success" } else { Write-Status "Network still not working..." "warning" }
     Write-Status "[5/5] Running optimizations..." "info"; Optimize-NetworkSpeed -Adapter $adapter
     Write-Host ""; Write-Status "Reset complete." "success"; return $true

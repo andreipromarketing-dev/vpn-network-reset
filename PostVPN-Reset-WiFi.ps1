@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Network Smart Reset v4.1
+    Network Smart Reset v5.0
     Auto-detect: if internet DOWN then full reset + optimize; if UP then just optimize
     Use -ForceReset to force adapter reset even when internet works
 #>

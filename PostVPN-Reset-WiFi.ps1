@@ -263,59 +263,69 @@ function Optimize-NetworkSpeed {
     try {
         $ts = if ($comp.DisableTimestamps) { "disabled" } else { "enabled" }
         Write-Status "[2/9] Setting TCP timestamps to $ts..." "info"
-        netsh int tcp set global timestamps=$ts 2>$null
-        if ((netsh int tcp show global) -match "timestamps\s*:\s*$ts") { Write-Status "TCP timestamps $ts" "success" } else { Write-Status "Failed to set timestamps to $ts" "warning" }
+        netsh int tcp set global timestamps=$ts 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "RFC 1323 Timestamps\s*:\s*$ts") {
+            Write-Status "TCP timestamps $ts" "success"
+        } else { Write-Status "Failed to set timestamps to $ts" "warning" }
     } catch { Write-Log "Timestamps step failed: $_" "warning" }
 
     try {
         Write-Status "[3/9] Setting Initial RTO to $($comp.InitialRto)ms..." "info"
-        netsh int tcp set global initialRto=$($comp.InitialRto) 2>$null
-        if ((netsh int tcp show global) -match "initial Rto\s*:\s*$($comp.InitialRto)") { Write-Status "Initial RTO set to $($comp.InitialRto)ms" "success" } else { Write-Status "Failed to set initialRto" "warning" }
+        netsh int tcp set global initialRto=$($comp.InitialRto) 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Initial RTO\s*:\s*$($comp.InitialRto)") {
+            Write-Status "Initial RTO set to $($comp.InitialRto)ms" "success"
+        } else { Write-Status "Failed to set initialRto" "warning" }
     } catch { Write-Log "RTO step failed: $_" "warning" }
 
     try {
         Write-Status "[4/9] Enabling RSS..." "info"
-        netsh int tcp set global rss=enabled 2>$null
-        if ((netsh int tcp show global) -match "rss\s*:\s*enabled") { Write-Status "RSS enabled" "success" } else { Write-Status "RSS not available" "warning" }
+        netsh int tcp set global rss=enabled 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Receive-Side Scaling State\s*:\s*enabled") {
+            Write-Status "RSS enabled" "success"
+        } else { Write-Status "RSS not available" "warning" }
         if ($comp.EnableDca) {
-            netsh int tcp set global dca=enabled 2>$null
-            if ((netsh int tcp show global) -match "dca\s*:\s*enabled") { Write-Status "DCA enabled" "success" } else { Write-Status "DCA not available (safe to ignore)" "warning" }
+            netsh int tcp set global dca=enabled 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Status "DCA enabled" "success" } else { Write-Status "DCA not available (safe to ignore)" "warning" }
         } else { Write-Status "DCA skipped (battery/conservative mode)" "info" }
     } catch { Write-Log "RSS/DCA step failed: $_" "warning" }
 
     try {
         $endPort = $comp.PortRangeStart + $comp.PortRangeCount - 1
         Write-Status "[5/9] Expanding dynamic port range to $($comp.PortRangeStart)-$endPort..." "info"
-        netsh int ipv4 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>$null
-        netsh int ipv6 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>$null
-        if ((netsh int ipv4 show dynamicport tcp) -match "start\s*:\s*$($comp.PortRangeStart)" -and (netsh int ipv6 show dynamicport tcp) -match "start\s*:\s*$($comp.PortRangeStart)") {
+        netsh int ipv4 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
+        netsh int ipv6 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or ((netsh int ipv4 show dynamicport tcp) -match "Start Port\s*:\s*$($comp.PortRangeStart)" -and (netsh int ipv6 show dynamicport tcp) -match "Start Port\s*:\s*$($comp.PortRangeStart)")) {
             Write-Status "Dynamic port range set to $($comp.PortRangeStart)-$endPort" "success"
         } else { Write-Status "Failed to set dynamic port range" "warning" }
     } catch { Write-Log "Port range step failed: $_" "warning" }
 
     try {
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
         Write-Status "[6/9] Setting MaxUserPort to $($comp.MaxUserPort)..." "info"
         reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v MaxUserPort /d $($comp.MaxUserPort) /t REG_DWORD /f 2>&1 | Out-Null
-        $mup = (Get-ItemProperty "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
+        $mup = (Get-ItemProperty $regPath -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
         if ($mup -eq $comp.MaxUserPort) { Write-Status "MaxUserPort set to $($comp.MaxUserPort)" "success" } else { Write-Status "Failed to set MaxUserPort" "warning" }
     } catch { Write-Log "MaxUserPort step failed: $_" "warning" }
 
     try {
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
         Write-Status "[7/9] Setting TcpTimedWaitDelay to $($comp.TcpTimedWaitDelay)s..." "info"
         reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /d $($comp.TcpTimedWaitDelay) /t REG_DWORD /f 2>&1 | Out-Null
-        $twd = (Get-ItemProperty "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
+        $twd = (Get-ItemProperty $regPath -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
         if ($twd -eq $comp.TcpTimedWaitDelay) { Write-Status "TcpTimedWaitDelay set to $($comp.TcpTimedWaitDelay)s" "success" } else { Write-Status "Failed to set TcpTimedWaitDelay" "warning" }
     } catch { Write-Log "TcpTimedWaitDelay step failed: $_" "warning" }
 
     try {
         Write-Status "[8/9] Setting TCP auto-tuning to $($comp.AutotuningLevel)..." "info"
-        netsh int tcp set global autotuninglevel=$($comp.AutotuningLevel) 2>$null
-        if ((netsh int tcp show global) -match "Autotuninglevel\s*:\s*$($comp.AutotuningLevel)") { Write-Status "TCP auto-tuning set to $($comp.AutotuningLevel)" "success" } else { Write-Status "Failed to set auto-tuning level" "warning" }
+        netsh int tcp set global autotuninglevel=$($comp.AutotuningLevel) 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Receive Window Auto-Tuning Level\s*:\s*$($comp.AutotuningLevel)") {
+            Write-Status "TCP auto-tuning set to $($comp.AutotuningLevel)" "success"
+        } else { Write-Status "Failed to set auto-tuning level" "warning" }
     } catch { Write-Log "Auto-tuning step failed: $_" "warning" }
 
     try {
         Write-Status "[9/9] Clearing DNS cache..." "info"
-        ipconfig /flushdns 2>$null
+        ipconfig /flushdns 2>&1 | Out-Null
         Write-Status "DNS cache flushed" "success"
     } catch { Write-Log "DNS flush step failed: $_" "warning" }
 

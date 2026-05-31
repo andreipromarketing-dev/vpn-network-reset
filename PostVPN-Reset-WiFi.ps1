@@ -42,6 +42,55 @@ function Write-Status {
     Write-Log $Message $Type
 }
 
+function Show-TcpSettings {
+    Write-Host ""
+    Write-Host "=== CURRENT TCP SETTINGS ===" -ForegroundColor Cyan
+    $globalText = netsh int tcp show global
+    $relevant = @(
+        'Add-On Congestion Control Provider',
+        'RFC 1323 Timestamps',
+        'Initial RTO',
+        'Receive-Side Scaling State',
+        'Direct Cache Access \(DCA\)',
+        'Receive Window Auto-Tuning Level',
+        'ECN Capability',
+        'Fast Open'
+    )
+    foreach ($line in $globalText) {
+        foreach ($pat in $relevant) {
+            if ($line -match $pat) {
+                Write-Host "  $line" -ForegroundColor Gray
+                break
+            }
+        }
+    }
+    Write-Host ""
+    Write-Host "=== DYNAMIC PORTS ===" -ForegroundColor Cyan
+    $v4 = netsh int ipv4 show dynamicport tcp
+    foreach ($line in $v4) { if ($line -match '^\s*(Start Port|Number of Ports)') { Write-Host "  IPv4: $line" -ForegroundColor Gray } }
+    $v6 = netsh int ipv6 show dynamicport tcp
+    foreach ($line in $v6) { if ($line -match '^\s*(Start Port|Number of Ports)') { Write-Host "  IPv6: $line" -ForegroundColor Gray } }
+    Write-Host ""
+    Write-Host "=== REGISTRY ===" -ForegroundColor Cyan
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+    $mup = (Get-ItemProperty $regPath -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
+    $twd = (Get-ItemProperty $regPath -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
+    Write-Host "  MaxUserPort: $(if ($mup) { $mup } else { '(not set, default 5000)' })" -ForegroundColor Gray
+    Write-Host "  TcpTimedWaitDelay: $(if ($twd) { "${twd}s" } else { '(not set, default 120s)' })" -ForegroundColor Gray
+    $comp = $ScriptConfig.ProfileSettings.ComputedSettings
+    if ($comp) {
+        Write-Host ""
+        Write-Host "=== OPTIMIZATION TARGETS ===" -ForegroundColor Cyan
+        Write-Host "  Timestamps:  $(if ($comp.DisableTimestamps) { 'disabled' } else { 'enabled' })" -ForegroundColor Gray
+        Write-Host "  Initial RTO: $($comp.InitialRto)ms" -ForegroundColor Gray
+        Write-Host "  Autotuning:  $($comp.AutotuningLevel)" -ForegroundColor Gray
+        Write-Host "  Port range:  $($comp.PortRangeStart)-$($comp.PortRangeStart + $comp.PortRangeCount - 1)" -ForegroundColor Gray
+        Write-Host "  MaxUserPort: $($comp.MaxUserPort)" -ForegroundColor Gray
+        Write-Host "  TcpTimedWaitDelay: $($comp.TcpTimedWaitDelay)s" -ForegroundColor Gray
+    }
+    Write-Host ""
+}
+
 function Test-Network {
     param([string]$TestHost = "8.8.8.8")
     try {
@@ -184,16 +233,20 @@ function Save-Snapshot {
     $globalText = netsh int tcp show global | Out-String
     $lines = $globalText -split "`r`n|`n"
     foreach ($ln in $lines) {
-        if ($ln -match '^\s*Congestion Provider\s*:\s*(.+)') { $snap.TcpCongestionProvider = $matches[1].Trim() }
-        if ($ln -match '^\s*Timestamps\s*:\s*(.+)') { $snap.TcpTimestamps = $matches[1].Trim() }
+        if ($ln -match '^\s*Add-On Congestion Control Provider\s*:\s*(.+)') { $snap.TcpCongestionProvider = $matches[1].Trim() }
+        if ($ln -match '^\s*RFC 1323 Timestamps\s*:\s*(.+)') { $snap.TcpTimestamps = $matches[1].Trim() }
         if ($ln -match '^\s*Initial RTO\s*:\s*(.+)') { $snap.TcpInitialRto = $matches[1].Trim() }
         if ($ln -match '^\s*Receive-Side Scaling State\s*:\s*(.+)') { $snap.TcpRss = $matches[1].Trim() }
-        if ($ln -match '^\s*Autotuninglevel\s*:\s*(.+)') { $snap.TcpAutotuningLevel = $matches[1].Trim() }
+        if ($ln -match '^\s*Receive Window Auto-Tuning Level\s*:\s*(.+)') { $snap.TcpAutotuningLevel = $matches[1].Trim() }
     }
-    $v4t = netsh int ipv4 show dynamicport tcp | Out-String
-    $v6t = netsh int ipv6 show dynamicport tcp | Out-String
-    if ($v4t -match 'start\s*:\s*(\d+)\s*num\s*:\s*(\d+)') { $snap.DynamicPortV4Start = [int]$matches[1]; $snap.DynamicPortV4Num = [int]$matches[2] }
-    if ($v6t -match 'start\s*:\s*(\d+)\s*num\s*:\s*(\d+)') { $snap.DynamicPortV6Start = [int]$matches[1]; $snap.DynamicPortV6Num = [int]$matches[2] }
+    $v4t = netsh int ipv4 show dynamicport tcp
+    $v4start = if ($v4t -match 'Start Port\s*:\s*(\d+)') { [int]$matches[1] } else { $null }
+    $v4num = if ($v4t -match 'Number of Ports\s*:\s*(\d+)') { [int]$matches[1] } else { $null }
+    if ($v4start -and $v4num) { $snap.DynamicPortV4Start = $v4start; $snap.DynamicPortV4Num = $v4num }
+    $v6t = netsh int ipv6 show dynamicport tcp
+    $v6start = if ($v6t -match 'Start Port\s*:\s*(\d+)') { [int]$matches[1] } else { $null }
+    $v6num = if ($v6t -match 'Number of Ports\s*:\s*(\d+)') { [int]$matches[1] } else { $null }
+    if ($v6start -and $v6num) { $snap.DynamicPortV6Start = $v6start; $snap.DynamicPortV6Num = $v6num }
     if ($Adapter) {
         try {
             $ifIdx = (Get-NetAdapter -Name $Adapter -ErrorAction SilentlyContinue).ifIndex
@@ -243,6 +296,15 @@ function Invoke-Restore {
     return $true
 }
 
+function Get-TcpValue {
+    param([string]$Label)
+    $lines = netsh int tcp show global
+    foreach ($ln in $lines) {
+        if ($ln -match "^$Label\s*:\s*(.+)") { return $matches[1].Trim() }
+    }
+    return "(not found)"
+}
+
 function Optimize-NetworkSpeed {
     param([string]$Adapter)
     $comp = $ScriptConfig.ProfileSettings.ComputedSettings
@@ -251,82 +313,101 @@ function Optimize-NetworkSpeed {
         return
     }
 
-    Write-Status "" "info"
-    Write-Status "=== OPTIMIZING NETWORK SPEED ===" "info"
+    Write-Host ""
+    Write-Host "=== OPTIMIZING NETWORK SPEED ===" -ForegroundColor Cyan
 
     try {
-        Write-Status "[1/9] Setting TCP congestion..." "info"
+        $before = (netsh int tcp show supplemental template=internet) -match "ctcp"
+        $beforeStr = if ($before) { "ctcp" } else { "default" }
+        Write-Host "  [1/9] CTCP: $beforeStr -> ctcp" -ForegroundColor Gray
         netsh int tcp set supplemental template=internet congestionprovider=ctcp 2>&1 | Out-Null
-        if ((netsh int tcp show supplemental template=internet) -match "ctcp") { Write-Status "CTCP enabled" "success" } else { Write-Status "CTCP not available" "warning" }
+        $after = (netsh int tcp show supplemental template=internet) -match "ctcp"
+        if ($after) { Write-Status "  CTCP: $beforeStr -> ctcp" "success" } else { Write-Status "  CTCP: not available" "warning" }
     } catch { Write-Log "CTCP step failed: $_" "warning" }
 
     try {
         $ts = if ($comp.DisableTimestamps) { "disabled" } else { "enabled" }
-        Write-Status "[2/9] Setting TCP timestamps to $ts..." "info"
+        $before = Get-TcpValue "RFC 1323 Timestamps"
+        Write-Host "  [2/9] Timestamps: $before -> $ts" -ForegroundColor Gray
         netsh int tcp set global timestamps=$ts 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "RFC 1323 Timestamps\s*:\s*$ts") {
-            Write-Status "TCP timestamps $ts" "success"
-        } else { Write-Status "Failed to set timestamps to $ts" "warning" }
+        $after = Get-TcpValue "RFC 1323 Timestamps"
+        if ($LASTEXITCODE -eq 0 -and $after -eq $ts) { Write-Status "  Timestamps: $before -> $after" "success" }
+        else { Write-Status "  Timestamps: failed (current: $after)" "warning" }
     } catch { Write-Log "Timestamps step failed: $_" "warning" }
 
     try {
-        Write-Status "[3/9] Setting Initial RTO to $($comp.InitialRto)ms..." "info"
+        $before = Get-TcpValue "Initial RTO"
+        Write-Host "  [3/9] Initial RTO: $before -> $($comp.InitialRto)ms" -ForegroundColor Gray
         netsh int tcp set global initialRto=$($comp.InitialRto) 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Initial RTO\s*:\s*$($comp.InitialRto)") {
-            Write-Status "Initial RTO set to $($comp.InitialRto)ms" "success"
-        } else { Write-Status "Failed to set initialRto" "warning" }
+        $after = Get-TcpValue "Initial RTO"
+        if ($LASTEXITCODE -eq 0 -and $after -match "$($comp.InitialRto)") { Write-Status "  Initial RTO: $before -> $after" "success" }
+        else { Write-Status "  Initial RTO: failed (current: $after)" "warning" }
     } catch { Write-Log "RTO step failed: $_" "warning" }
 
     try {
-        Write-Status "[4/9] Enabling RSS..." "info"
+        $before = Get-TcpValue "Receive-Side Scaling State"
+        Write-Host "  [4/9] RSS: $before -> enabled" -ForegroundColor Gray
         netsh int tcp set global rss=enabled 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Receive-Side Scaling State\s*:\s*enabled") {
-            Write-Status "RSS enabled" "success"
-        } else { Write-Status "RSS not available" "warning" }
+        $after = Get-TcpValue "Receive-Side Scaling State"
+        if ($LASTEXITCODE -eq 0 -and $after -eq "enabled") { Write-Status "  RSS: $before -> $after" "success" }
+        else { Write-Status "  RSS: not available (current: $after)" "warning" }
         if ($comp.EnableDca) {
+            $before = Get-TcpValue "Direct Cache Access \(DCA\)"
             netsh int tcp set global dca=enabled 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Status "DCA enabled" "success" } else { Write-Status "DCA not available (safe to ignore)" "warning" }
-        } else { Write-Status "DCA skipped (battery/conservative mode)" "info" }
+            $after = Get-TcpValue "Direct Cache Access \(DCA\)"
+            if ($LASTEXITCODE -eq 0 -and $after -eq "enabled") { Write-Status "  DCA: $before -> $after" "success" }
+            else { Write-Status "  DCA: not available (safe to ignore)" "warning" }
+        } else { Write-Status "  DCA: skipped (battery mode)" "info" }
     } catch { Write-Log "RSS/DCA step failed: $_" "warning" }
 
     try {
         $endPort = $comp.PortRangeStart + $comp.PortRangeCount - 1
-        Write-Status "[5/9] Expanding dynamic port range to $($comp.PortRangeStart)-$endPort..." "info"
+        $v4raw = netsh int ipv4 show dynamicport tcp
+        $before = if ($v4raw -match 'Start Port\s*:\s*(\d+).*Number of Ports\s*:\s*(\d+)') { "$($matches[1])-$([int]$matches[1] + [int]$matches[2] - 1)" } else { "unknown" }
+        Write-Host "  [5/9] Port range: $before -> $($comp.PortRangeStart)-$endPort" -ForegroundColor Gray
         netsh int ipv4 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
         netsh int ipv6 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -or ((netsh int ipv4 show dynamicport tcp) -match "Start Port\s*:\s*$($comp.PortRangeStart)" -and (netsh int ipv6 show dynamicport tcp) -match "Start Port\s*:\s*$($comp.PortRangeStart)")) {
-            Write-Status "Dynamic port range set to $($comp.PortRangeStart)-$endPort" "success"
-        } else { Write-Status "Failed to set dynamic port range" "warning" }
+        $v4check = netsh int ipv4 show dynamicport tcp
+        if ($LASTEXITCODE -eq 0 -and $v4check -match "Start Port\s*:\s*$($comp.PortRangeStart)") {
+            Write-Status "  Port range: $before -> $($comp.PortRangeStart)-$endPort" "success"
+        } else { Write-Status "  Port range: failed" "warning" }
     } catch { Write-Log "Port range step failed: $_" "warning" }
 
     try {
         $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
-        Write-Status "[6/9] Setting MaxUserPort to $($comp.MaxUserPort)..." "info"
+        $before = (Get-ItemProperty $regPath -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
+        $beforeStr = if ($before) { "$before" } else { "5000 (default)" }
+        Write-Host "  [6/9] MaxUserPort: $beforeStr -> $($comp.MaxUserPort)" -ForegroundColor Gray
         reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v MaxUserPort /d $($comp.MaxUserPort) /t REG_DWORD /f 2>&1 | Out-Null
-        $mup = (Get-ItemProperty $regPath -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
-        if ($mup -eq $comp.MaxUserPort) { Write-Status "MaxUserPort set to $($comp.MaxUserPort)" "success" } else { Write-Status "Failed to set MaxUserPort" "warning" }
+        $after = (Get-ItemProperty $regPath -Name MaxUserPort -ErrorAction SilentlyContinue).MaxUserPort
+        if ($after -eq $comp.MaxUserPort) { Write-Status "  MaxUserPort: $beforeStr -> $after" "success" }
+        else { Write-Status "  MaxUserPort: failed" "warning" }
     } catch { Write-Log "MaxUserPort step failed: $_" "warning" }
 
     try {
         $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
-        Write-Status "[7/9] Setting TcpTimedWaitDelay to $($comp.TcpTimedWaitDelay)s..." "info"
+        $before = (Get-ItemProperty $regPath -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
+        $beforeStr = if ($before) { "${before}s" } else { "120s (default)" }
+        Write-Host "  [7/9] TcpTimedWaitDelay: $beforeStr -> $($comp.TcpTimedWaitDelay)s" -ForegroundColor Gray
         reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /d $($comp.TcpTimedWaitDelay) /t REG_DWORD /f 2>&1 | Out-Null
-        $twd = (Get-ItemProperty $regPath -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
-        if ($twd -eq $comp.TcpTimedWaitDelay) { Write-Status "TcpTimedWaitDelay set to $($comp.TcpTimedWaitDelay)s" "success" } else { Write-Status "Failed to set TcpTimedWaitDelay" "warning" }
+        $after = (Get-ItemProperty $regPath -Name TcpTimedWaitDelay -ErrorAction SilentlyContinue).TcpTimedWaitDelay
+        if ($after -eq $comp.TcpTimedWaitDelay) { Write-Status "  TcpTimedWaitDelay: $beforeStr -> ${after}s" "success" }
+        else { Write-Status "  TcpTimedWaitDelay: failed" "warning" }
     } catch { Write-Log "TcpTimedWaitDelay step failed: $_" "warning" }
 
     try {
-        Write-Status "[8/9] Setting TCP auto-tuning to $($comp.AutotuningLevel)..." "info"
+        $before = Get-TcpValue "Receive Window Auto-Tuning Level"
+        Write-Host "  [8/9] Auto-tuning: $before -> $($comp.AutotuningLevel)" -ForegroundColor Gray
         netsh int tcp set global autotuninglevel=$($comp.AutotuningLevel) 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -or (netsh int tcp show global) -match "Receive Window Auto-Tuning Level\s*:\s*$($comp.AutotuningLevel)") {
-            Write-Status "TCP auto-tuning set to $($comp.AutotuningLevel)" "success"
-        } else { Write-Status "Failed to set auto-tuning level" "warning" }
+        $after = Get-TcpValue "Receive Window Auto-Tuning Level"
+        if ($LASTEXITCODE -eq 0 -and $after -eq $comp.AutotuningLevel) { Write-Status "  Auto-tuning: $before -> $after" "success" }
+        else { Write-Status "  Auto-tuning: failed (current: $after)" "warning" }
     } catch { Write-Log "Auto-tuning step failed: $_" "warning" }
 
     try {
-        Write-Status "[9/9] Clearing DNS cache..." "info"
+        Write-Host "  [9/9] Flushing DNS cache..." -ForegroundColor Gray
         ipconfig /flushdns 2>&1 | Out-Null
-        Write-Status "DNS cache flushed" "success"
+        Write-Status "  DNS cache flushed" "success"
     } catch { Write-Log "DNS flush step failed: $_" "warning" }
 
     if ($Adapter) {
@@ -489,14 +570,14 @@ function Main {
     if (Test-Path $ScriptConfig.SnapshotFile) {
         Write-Host ""
         Write-Host "WARNING: Previous run may have left unapplied changes." -ForegroundColor Yellow
-        Write-Host "  [R] Restore -- otkatit izmenenia iz snapshota" -ForegroundColor Yellow
-        Write-Host "  [F] Overwrite -- snova sdelat snapshot i prodolzhit" -ForegroundColor Yellow
-        Write-Host "  [Q] Quit -- vyjti" -ForegroundColor Yellow
+        Write-Host "  [U] Undo -- restore to pre-change state" -ForegroundColor Yellow
+        Write-Host "  [C] Continue -- overwrite snapshot, start fresh" -ForegroundColor Yellow
+        Write-Host "  [Q] Quit" -ForegroundColor Yellow
         Write-Host ""
-        switch ((Read-Host "Vyberite [R/F/Q]").ToUpper()) {
-            'R' { Invoke-Restore; return }
-            'F' { Remove-Item -Path $ScriptConfig.SnapshotFile -Force; Write-Status "Snapshot perezapisan" "warning" }
-            default { Write-Host "Vyhod..." -ForegroundColor Gray; return }
+        switch ((Read-Host "Choose [U/C/Q]").ToUpper()) {
+            'U' { Invoke-Restore; return }
+            'C' { Remove-Item -Path $ScriptConfig.SnapshotFile -Force; Write-Status "Old snapshot removed" "warning" }
+            default { return }
         }
     }
 
@@ -509,18 +590,24 @@ function Main {
     Invoke-SmartMode
 
     do {
+        $netOk = Test-Network
+        $netIcon = if ($netOk) { "[ONLINE]" } else { "[OFFLINE]" }
+        $netColor = if ($netOk) { "Green" } else { "Red" }
         Write-Host ""
         Write-Host "=== NETWORK MENU ===" -ForegroundColor Cyan
-        Write-Host "  [F] Force reset -- polnyj sbros + optimizacia"
-        Write-Host "  [O] Re-run optimization -- zapustit optimizaciu snova"
-        Write-Host "  [R] Restore -- otkatit vse izmenenia iz snapshota"
-        Write-Host "  [Q] Quit -- vyjti"
+        Write-Host -NoNewline "  Status: "; Write-Host $netIcon -ForegroundColor $netColor
+        Write-Host "  [S] Show current TCP settings and optimization plan"
+        Write-Host "  [O] Optimize only (safe, no adapter reset)"
+        Write-Host "  [R] Full reset + optimize (drops connection briefly)"
+        Write-Host "  [U] Undo all changes (restore snapshot)"
+        Write-Host "  [Q] Quit"
         Write-Host ""
-        $mc = (Read-Host "Vyberite [F/O/R/Q]").ToUpper()
+        $mc = (Read-Host "Choose [S/O/R/U/Q]").ToUpper()
         switch ($mc) {
-            'F' { Write-Log "Menu: Force reset" "info"; Invoke-NetworkReset }
-            'O' { Write-Log "Menu: Re-optimize" "info"; Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter) }
-            'R' { Write-Log "Menu: Restore" "info"; Invoke-Restore; $mc = 'Q'; continue }
+            'S' { Show-TcpSettings }
+            'O' { Write-Log "Menu: Optimize only" "info"; Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter) }
+            'R' { Write-Log "Menu: Full reset" "info"; Invoke-NetworkReset }
+            'U' { Write-Log "Menu: Undo" "info"; Invoke-Restore; $mc = 'Q'; continue }
         }
     } while ($mc -ne 'Q')
 }

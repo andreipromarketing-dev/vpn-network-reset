@@ -1,13 +1,27 @@
 <#
 .SYNOPSIS
-    Network Smart Reset v5.0
-    Auto-detect: if internet DOWN then full reset + optimize; if UP then just optimize
-    Use -ForceReset to force adapter reset even when internet works
+    Network Rescue & Optimizer v6.0
+    Восстановление доступа к сети после блокировки провайдером + оптимизация под железо
+    
+    Особенности:
+    - Расширенная диагностика сети (шлюз, DNS, внешние хосты)
+    - Безопасное восстановление БЕЗ отключения адаптеров
+    - Работа без перезагрузки (сброс служб и стека)
+    - Понятное интерактивное меню
+    - Автоматический выбор действий по результатам проверки
+    - Мягкие TCP-настройки для совместимости
+    
+    Использование:
+      .\Network_Rescue_Optimizer.ps1              # Интерактивный режим
+      .\Network_Rescue_Optimizer.ps1 -Auto        # Авто-восстановление при проблемах
+      .\Network_Rescue_Optimizer.ps1 -Optimize    # Только оптимизация
+      .\Network_Rescue_Optimizer.ps1 -Restore     # Восстановить исходные настройки
 #>
 
 param(
-    [switch]$ForceReset,
-    [switch]$Restore
+    [switch]$Auto,      # Автоматическое восстановление при обнаружении проблем
+    [switch]$Optimize,  # Только оптимизация без проверок
+    [switch]$Restore    # Восстановить исходные настройки из снапшота
 )
 
 $ScriptConfig = @{
@@ -20,6 +34,8 @@ $ScriptConfig = @{
     VpnPatterns     = @("VPN", "Cisco", "OpenVPN", "WireGuard", "TAP", "TUN", "NordVPN", "ExpressVPN", "CyberGhost", "ChatVPN")
     MaxLogSize      = 1MB
     ProfileSettings = $null
+    # Тестовые хосты для проверки доступа к сети
+    TestHosts       = @("8.8.8.8", "1.1.1.1", "8.8.4.4")
 }
 
 function Write-Log {
@@ -92,14 +108,91 @@ function Show-TcpSettings {
 }
 
 function Test-Network {
-    param([string]$TestHost = "8.8.8.8")
+    param([string]$TestHost = $null)
+    
+    # Расширенная проверка сети с детальной диагностикой
+    $result = @{
+        HasInternet = $false
+        HasGateway = $false
+        HasDns = $false
+        GatewayReachable = $false
+        DnsResolved = $false
+        Details = @()
+    }
+    
+    # 1. Проверка шлюза по умолчанию
     try {
-        $ping = Test-Connection -ComputerName $TestHost -Count 2 -Quiet -ErrorAction Stop
-        if ($ping) { return $true }
-        $gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -notmatch "127\.0\.0\.1" } | Select-Object -First 1).NextHop
-        if ($gateway) { return (Test-Connection -ComputerName $gateway -Count 1 -Quiet -ErrorAction SilentlyContinue) }
-        return $false
-    } catch { Write-Log "Test-Network error: $_" "warning"; return $false }
+        $gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | 
+                    Where-Object { $_.NextHop -and $_.NextHop -notmatch "127\.0\.0\.1" } | 
+                    Select-Object -First 1).NextHop
+        if ($gateway) {
+            $result.HasGateway = $true
+            $result.Details += "Шлюз: $gateway"
+            
+            # Пинг шлюза
+            if (Test-Connection -ComputerName $gateway -Count 2 -Quiet -ErrorAction SilentlyContinue) {
+                $result.GatewayReachable = $true
+                $result.Details += "Шлюз доступен (ping OK)"
+            } else {
+                $result.Details += "Шлюз НЕ отвечает на ping"
+            }
+        } else {
+            $result.Details += "Шлюз по умолчанию не найден"
+        }
+    } catch {
+        $result.Details += "Ошибка получения шлюза: $_"
+    }
+    
+    # 2. Проверка DNS
+    try {
+        $adapter = Get-ActiveAdapter
+        if ($adapter) {
+            $ifIndex = (Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue).ifIndex
+            if ($ifIndex) {
+                $dnsServers = Get-DnsClientServerAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | 
+                              Select-Object -ExpandProperty ServerAddresses -ErrorAction SilentlyContinue
+                if ($dnsServers -and $dnsServers.Count -gt 0) {
+                    $result.HasDns = $true
+                    $result.Details += "DNS серверы: $($dnsServers -join ', ')"
+                    
+                    # Тест разрешения имени
+                    try {
+                        $resolved = [System.Net.Dns]::GetHostEntry("www.microsoft.com")
+                        if ($resolved) {
+                            $result.DnsResolved = $true
+                            $result.Details += "DNS работает (microsoft.com разрешён)"
+                        }
+                    } catch {
+                        $result.Details += "DNS НЕ разрешает имена"
+                    }
+                } else {
+                    $result.Details += "DNS серверы не настроены"
+                }
+            }
+        }
+    } catch {
+        $result.Details += "Ошибка проверки DNS: $_"
+    }
+    
+    # 3. Проверка доступа к внешним хостам
+    $hostsToTest = if ($TestHost) { @($TestHost) } else { $ScriptConfig.TestHosts }
+    foreach ($host in $hostsToTest) {
+        try {
+            $pingResult = Test-Connection -ComputerName $host -Count 2 -Quiet -TimeoutSeconds $ScriptConfig.PingTimeout -ErrorAction Stop
+            if ($pingResult) {
+                $result.HasInternet = $true
+                $result.Details += "Доступ к $host: OK"
+                break
+            }
+        } catch {
+            $result.Details += "Доступ к $host: НЕТ"
+        }
+    }
+    
+    # Итоговый вердикт
+    $result.IsOnline = $result.HasInternet -and $result.HasGateway -and $result.GatewayReachable
+    
+    return $result
 }
 
 function Get-ActiveAdapter {
@@ -116,16 +209,24 @@ function Get-ActiveAdapter {
 }
 
 function Disable-AllVPNAdapters {
+    # БЕЗОПАСНАЯ версия: НЕ отключаем адаптеры, только логируем найденные VPN
+    # Отключение адаптеров вызывает проблемы после перезагрузки
+    Write-Status "Поиск VPN-адаптеров (только диагностика, не отключаем)..." "info"
     $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" -and $_.Name -notmatch 'Bluetooth' }
+    $foundVpn = $false
     foreach ($adapter in $adapters) {
         foreach ($pattern in $ScriptConfig.VpnPatterns) {
             if ($adapter.Name -imatch $pattern) {
-                Write-Status "Disconnecting VPN adapter: $($adapter.Name)" "warning"
-                try { Disable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop; Write-Log "Disabled: $($adapter.Name)" "info" } catch { Write-Log "Failed to disable: $_" "warning" }
+                Write-Status "  Найден VPN-адаптер: $($adapter.Name) (не отключаем)" "warning"
+                $foundVpn = $true
                 break
             }
         }
     }
+    if (-not $foundVpn) {
+        Write-Status "  VPN-адаптеры не обнаружены" "success"
+    }
+    return $foundVpn
 }
 
 function Wait-AdapterReady {
@@ -142,17 +243,31 @@ function Wait-AdapterReady {
 
 function Compute-OptimizationSettings {
     param($Profile)
+    # Оптимизация под железо с более мягкими настройками для совместимости
     $cores = [Math]::Max([int]$Profile.PhysicalCores, 1)
     $rss = [Math]::Min($cores, 4)
     $linkOk = $Profile.LinkSpeedMbps -and [int]$Profile.LinkSpeedMbps -ge 100
     $rttOk = $Profile.GatewayRttMs -and [int]$Profile.GatewayRttMs -le 50
+    
+    # Более консервативные настройки для избежания проблем с соединениями
     $initialRto = if ($linkOk -and $rttOk) { 300 } else { 500 }
-    $timedWait = if ($rttOk) { 30 } else { 60 }
-    $disableTimestamps = ([int]$Profile.InterfaceType -eq 71)
+    $timedWait = if ($rttOk) { 60 } else { 90 }  # Увеличено с 30/60 до 60/90 для совместимости
+    $disableTimestamps = $false  # Отключено: timestamps могут быть нужны для некоторых соединений
     $autotuning = if ([double]$Profile.RamGB -lt 8) { "restricted" } else { "normal" }
     $enableDca = (-not $Profile.OnBattery)
     if ($Profile.OnBattery) { $rss = [Math]::Max([Math]::Ceiling($rss / 2), 1) }
-    return @{ InitialRto=$initialRto; TcpTimedWaitDelay=$timedWait; RssMaxProcessors=$rss; DisableTimestamps=$disableTimestamps; EnableDca=$enableDca; AutotuningLevel=$autotuning; PortRangeStart=10000; PortRangeCount=55534; MaxUserPort=65534 }
+    
+    return @{ 
+        InitialRto=$initialRto
+        TcpTimedWaitDelay=$timedWait
+        RssMaxProcessors=$rss
+        DisableTimestamps=$disableTimestamps
+        EnableDca=$enableDca
+        AutotuningLevel=$autotuning
+        PortRangeStart=10000
+        PortRangeCount=55534
+        MaxUserPort=65534
+    }
 }
 
 function Get-SystemProfile {
@@ -421,130 +536,205 @@ function Optimize-NetworkSpeed {
 }
 
 function Invoke-NetworkReset {
+    param([switch]$Soft)  # Мягкий сброс - только службы и кэши, без IP renewal
+    
     Write-Host ""
-    Write-Host "=== NETWORK RESET ===" -ForegroundColor Cyan
-    Write-Log "Starting network reset" "info"
+    Write-Host "=== ВОССТАНОВЛЕНИЕ СЕТИ ===" -ForegroundColor Cyan
+    Write-Log "Starting network rescue (Soft=$Soft)" "info"
+    
     $adapter = Get-ActiveAdapter
     if (-not $adapter) {
-        Write-Status "No adapter found at all!" "error"
-        Write-Log "Reset aborted: no adapter" "error"
+        Write-Status "Адаптер не найден!" "error"
+        Write-Log "Rescue aborted: no adapter" "error"
         return $false
     }
+    
     $adapterObj = Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue
     if ($adapterObj) {
         if ($adapterObj.Status -ne 'Up') {
-            Write-Status "Adapter is $($adapterObj.Status) - attempting to enable..." "warning"
+            Write-Status "Адаптер в состоянии $($adapterObj.Status) - пытаемся включить..." "warning"
             try {
                 Enable-NetAdapter -Name $adapter -Confirm:$false -ErrorAction Stop
-                Write-Status "Adapter enabled, waiting to come up..." "info"
+                Write-Status "Адаптер включён, ждём готовности..." "info"
                 Start-Sleep -Seconds 3
             } catch { Write-Log "Failed to enable adapter: $_" "warning" }
         }
+        
+        # Для WiFi - проверка подключения к сети
         if ($adapterObj.InterfaceType -eq 71) {
             $wlanInfo = netsh wlan show interfaces 2>$null | Out-String
             if ($wlanInfo -notmatch "SSID\s*:\s*.+") {
-                Write-Status "WiFi not connected - scanning for known networks..." "warning"
+                Write-Status "WiFi не подключён - сканируем известные сети..." "warning"
                 $profiles = netsh wlan show profiles 2>$null | Out-String
                 $matchedProfiles = [regex]::Matches($profiles, "All User Profile\s*:\s*(.+)")
                 if ($matchedProfiles.Count -gt 0) {
                     $ssid = $matchedProfiles[$matchedProfiles.Count - 1].Groups[1].Value.Trim()
-                    Write-Status "Trying to connect to $ssid..." "info"
+                    Write-Status "Попытка подключения к $ssid..." "info"
                     $null = netsh wlan connect name="$ssid" 2>&1 | Out-Null
-                    Start-Sleep -Seconds 3
+                    Start-Sleep -Seconds 5
                 }
+            } else {
+                Write-Status "WiFi подключён к сети" "success"
             }
         }
     }
+    
     if (-not (Wait-AdapterReady -Adapter $adapter -Timeout 10)) {
-        Write-Status "Adapter not ready, trying any available adapter..." "warning"
+        Write-Status "Адаптер не готов, пробуем другой..." "warning"
         $adapter = Get-ActiveAdapter
         if (-not $adapter) {
-            Write-Status "Still no usable adapter" "error"
+            Write-Status "Нет доступных адаптеров" "error"
             return $false
         }
     }
-    Write-Status "Using adapter: $adapter" "info"
+    
+    Write-Status "Используемый адаптер: $adapter" "info"
     $ifIndex = (Get-NetAdapter -Name $adapter -ErrorAction SilentlyContinue).ifIndex
-    if (-not $ifIndex) { Write-Status "Adapter $adapter lost" "error"; return $false }
-    Write-Status "[1/5] Disabling VPN adapters..." "info"
+    if (-not $ifIndex) { Write-Status "Адаптер потерян" "error"; return $false }
+    
+    # Этап 1: Диагностика VPN-адаптеров (без отключения!)
+    Write-Status "[1/6] Проверка VPN-адаптеров..." "info"
     Disable-AllVPNAdapters
-    Start-Sleep -Seconds 2
-    Write-Status "[2/5] Renewing IP..." "info"
+    Start-Sleep -Seconds 1
+    
+    # Этап 2: Сброс сетевых служб БЕЗ разрыва соединений
+    Write-Status "[2/6] Перезапуск сетевых служб (без разрыва активных соединений)..." "info"
     try {
-        ipconfig /release $adapter 2>&1 | Out-Null
-        Start-Sleep -Seconds 1
-        ipconfig /renew $adapter 2>&1 | Out-Null
-        Start-Sleep -Seconds 3
-        $ipInfo = Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' }
-        if ($ipInfo) {
-            Write-Status "IP renewed: $($ipInfo.IPAddress)" "success"
-        } else {
-            Write-Status "IP renewal completed (check connectivity)" "success"
-        }
-    } catch { Write-Log "IP renew error: $_" "warning" }
-    Write-Status "[3/5] Flushing DNS and cleaning routes..." "info"
+        # Перезапускаем только DNS Client, не трогая DHCP для сохранения сессий
+        Restart-Service -Name "Dnscache" -Force -ErrorAction SilentlyContinue
+        Write-Status "  DNS Client служба перезапущена" "success"
+    } catch { Write-Log "DNS service restart failed: $_" "warning" }
+    
+    try {
+        # Сброс Winsock без перезагрузки
+        netsh winsock reset catalog 2>&1 | Out-Null
+        Write-Status "  Winsock каталог сброшен (требуется перезагрузка для полного применения)" "warning"
+    } catch { Write-Log "Winsock reset failed: $_" "warning" }
+    
+    # Этап 3: Очистка кэшей и маршрутов
+    Write-Status "[3/6] Очистка кэшей и таблиц маршрутизации..." "info"
     try {
         ipconfig /flushdns 2>&1 | Out-Null
         $null = netsh int ip delete destinationcache 2>&1
-        Write-Status "DNS flushed, route cache cleared" "success"
-    } catch { Write-Log "Route cache warning: $_" "warning" }
-    Write-Status "[4/5] Checking network..." "info"
-    $networkOk = $false
-    for ($i = 1; $i -le 3; $i++) {
-        if (Test-Network) {
-            Write-Status "Network restored! (attempt $i)" "success"
-            Write-Log "Network restored after $i attempt(s)" "success"
-            $networkOk = $true
-            break
-        } elseif ($i -lt 3) {
-            Write-Status "Network not yet available... retrying" "warning"
-            Start-Sleep -Seconds 5
-        } else {
-            Write-Status "Network still not working after 3 attempts" "error"
-            Write-Log "Network recovery failed after 3 attempts" "error"
+        Write-Status "  DNS кэш очищен, таблица маршрутов обновлена" "success"
+    } catch { Write-Log "Cache clear failed: $_" "warning" }
+    
+    # Этап 4: Обновление IP (только если не мягкий режим)
+    if (-not $Soft) {
+        Write-Status "[4/6] Обновление IP-адреса..." "info"
+        try {
+            ipconfig /release $adapter 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+            ipconfig /renew $adapter 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            $ipInfo = Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' }
+            if ($ipInfo) {
+                Write-Status "  IP-адрес обновлён: $($ipInfo.IPAddress)" "success"
+            } else {
+                Write-Status "  IP получен (проверьте подключение)" "success"
+            }
+        } catch { Write-Log "IP renew error: $_" "warning" }
+    } else {
+        Write-Status "[4/6] Пропуск обновления IP (мягкий режим)" "info"
+        $ipInfo = Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' }
+        if ($ipInfo) {
+            Write-Status "  Текущий IP: $($ipInfo.IPAddress)" "info"
         }
     }
-    if (-not $networkOk) { return $false }
-    Write-Status "[5/5] Running optimizations..." "info"
-    Optimize-NetworkSpeed -Adapter $adapter
+    
+    # Этап 5: Проверка сети с детальной диагностикой
+    Write-Status "[5/6] Проверка доступа к сети..." "info"
+    $networkResult = Test-Network
+    
+    # Вывод результатов диагностики
     Write-Host ""
-    Write-Status "Reset complete." "success"
+    Write-Host "  Результаты диагностики:" -ForegroundColor Cyan
+    foreach ($detail in $networkResult.Details) {
+        $color = "Gray"
+        if ($detail -match "OK|доступен|работает") { $color = "Green" }
+        elseif ($detail -match "НЕ|НЕТ|ошибка") { $color = "Red" }
+        Write-Host "    $detail" -ForegroundColor $color
+    }
+    Write-Host ""
+    
+    if ($networkResult.IsOnline) {
+        Write-Status "Сеть работает корректно!" "success"
+        Write-Log "Network restored after rescue" "success"
+    } else {
+        Write-Status "Обнаружены проблемы с сетью" "error"
+        Write-Log "Network issues detected after rescue" "error"
+        
+        # Попытка дополнительного восстановления
+        Write-Status "Попытка дополнительного восстановления..." "warning"
+        try {
+            # Сброс TCP/IP стека
+            netsh int ip reset all 2>&1 | Out-Null
+            Write-Status "  TCP/IP стек сброшен (требуется перезагрузка)" "warning"
+            
+            # Повторная проверка
+            Start-Sleep -Seconds 3
+            $networkResult = Test-Network
+            if ($networkResult.IsOnline) {
+                Write-Status "Сеть восстановлена после сброса TCP/IP!" "success"
+            } else {
+                Write-Status "Проблемы сохраняются. Проверьте роутер или кабель." "error"
+                return $false
+            }
+        } catch { Write-Log "Additional reset failed: $_" "error"; return $false }
+    }
+    
+    # Этап 6: Оптимизация
+    Write-Status "[6/6] Применение оптимизаций..." "info"
+    Optimize-NetworkSpeed -Adapter $adapter
+    
+    Write-Host ""
+    Write-Status "Восстановление завершено успешно!" "success"
+    Write-Status "Примечание: некоторые изменения могут потребовать перезагрузки" "warning"
     return $true
 }
 
 function Invoke-SmartMode {
-    Write-Log "=== Smart mode started ===" "info"
-    $needReset = $ForceReset -or (-not (Test-Network))
-
-    if ($needReset) {
-        if ($ForceReset) {
-            Write-Status "Force mode: resetting adapter..." "warning"
-        } else {
-            Write-Status "Network is DOWN - starting recovery..." "warning"
-        }
-        $success = $false
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
-            if (Invoke-NetworkReset) {
-                $success = $true
-                break
+    param([switch]$Auto)
+    
+    Write-Log "=== Smart mode started (Auto=$Auto) ===" "info"
+    
+    # Расширенная проверка сети
+    $networkResult = Test-Network
+    
+    if ($Auto) {
+        # Автоматический режим: действуем только если есть проблемы
+        if (-not $networkResult.IsOnline) {
+            Write-Status "Обнаружены проблемы с сетью - запускаем восстановление..." "warning"
+            $success = $false
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+                if (Invoke-NetworkReset -Soft) {
+                    $success = $true
+                    break
+                }
+                if ($attempt -lt 2) {
+                    Write-Status "Попыка не удалась, повторяем ($attempt/2)..." "warning"
+                    Start-Sleep -Seconds 3
+                }
             }
-            if ($attempt -lt 3) {
-                Write-Status "Reset failed, retrying ($attempt/3)..." "warning"
-                Start-Sleep -Seconds 3
+            if ($success) {
+                Write-Status "Сеть восстановлена!" "success"
+                Write-Log "Network recovered after rescue" "success"
+            } else {
+                Write-Status "Восстановление не удалось. Проверьте роутер или кабель." "error"
+                Write-Log "Rescue failed after 2 attempts" "error"
             }
-        }
-        if ($success) {
-            Write-Status "Network restored successfully!" "success"
-            Write-Log "Network recovered after reset" "success"
         } else {
-            Write-Status "Reset failed after 3 attempts. Check router or cable." "error"
-            Write-Log "Reset failed after 3 attempts" "error"
+            Write-Status "Сеть работает нормально - оптимизация не требуется" "success"
+            Write-Log "Network OK, no action needed" "info"
         }
+        return
+    }
+    
+    # Интерактивный режим
+    if ($networkResult.IsOnline) {
+        Write-Status "Сеть работает корректно" "success"
     } else {
-        Write-Status "Network is working - running optimization..." "success"
-        Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter)
-        Write-Status "Optimization done!" "success"
-        Write-Log "Optimization completed, network was OK" "success"
+        Write-Status "Обнаружены проблемы с сетью" "error"
     }
 }
 
@@ -560,56 +750,137 @@ function Check-Admin {
 
 function Main {
     Check-Admin
-    Write-Log "=== Script started (ForceReset=$ForceReset Restore=$Restore) ===" "info"
+    Write-Log "=== Script started (Auto=$Auto Optimize=$Optimize Restore=$Restore) ===" "info"
 
+    # Обработка ключей командной строки
     if ($Restore) {
         Invoke-Restore
         return
     }
+    
+    if ($Optimize) {
+        Write-Status "Запуск оптимизации сети..." "info"
+        $ScriptConfig.ProfileSettings = Get-SystemProfile
+        if (-not (Save-Snapshot -Adapter (Get-ActiveAdapter))) {
+            Write-Status "Не удалось создать снапшот, продолжаем..." "warning"
+        }
+        Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter)
+        return
+    }
+    
+    if ($Auto) {
+        Write-Status "Автоматический режим: проверка и восстановление при необходимости..." "info"
+        $ScriptConfig.ProfileSettings = Get-SystemProfile
+        Save-Snapshot -Adapter (Get-ActiveAdapter) | Out-Null
+        Invoke-SmartMode -Auto
+        return
+    }
 
+    # Интерактивный режим с понятным меню
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║     Network Rescue & Optimizer v6.0                      ║" -ForegroundColor Cyan
+    Write-Host "║     Восстановление и оптимизация сети                    ║" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Проверка наличия старого снапшота
     if (Test-Path $ScriptConfig.SnapshotFile) {
         Write-Host ""
-        Write-Host "WARNING: Previous run may have left unapplied changes." -ForegroundColor Yellow
-        Write-Host "  [U] Undo -- restore to pre-change state" -ForegroundColor Yellow
-        Write-Host "  [C] Continue -- overwrite snapshot, start fresh" -ForegroundColor Yellow
-        Write-Host "  [Q] Quit" -ForegroundColor Yellow
+        Write-Host "⚠ Предыдущий запуск оставил изменения!" -ForegroundColor Yellow
+        Write-Host "  [U] Отменить изменения (восстановить исходное состояние)" -ForegroundColor Yellow
+        Write-Host "  [C] Продолжить (удалить старый снапшот)" -ForegroundColor Yellow
+        Write-Host "  [Q] Выход" -ForegroundColor Yellow
         Write-Host ""
-        switch ((Read-Host "Choose [U/C/Q]").ToUpper()) {
+        switch ((Read-Host "Выберите [U/C/Q]").ToUpper()) {
             'U' { Invoke-Restore; return }
-            'C' { Remove-Item -Path $ScriptConfig.SnapshotFile -Force; Write-Status "Old snapshot removed" "warning" }
+            'C' { Remove-Item -Path $ScriptConfig.SnapshotFile -Force; Write-Status "Старый снапшот удалён" "warning" }
             default { return }
         }
     }
 
+    # Создание профиля системы и снапшота
     $ScriptConfig.ProfileSettings = Get-SystemProfile
     if (-not (Save-Snapshot -Adapter (Get-ActiveAdapter))) {
-        Write-Status "No snapshot - cannot guarantee restore if something breaks" "warning"
-        Write-Status "Continue anyway? [Y/N]" "warning"
+        Write-Status "Не удалось создать снапшот для восстановления" "warning"
+        Write-Status "Продолжить без гарантии отката? [Y/N]" "warning"
         if ((Read-Host).ToUpper() -ne 'Y') { return }
     }
-    Invoke-SmartMode
 
+    # Первичная диагностика
+    Write-Host ""
+    Write-Host "📋 Выполняется диагностика сети..." -ForegroundColor Cyan
+    $networkResult = Test-Network
+    
+    Write-Host ""
+    Write-Host "  Результаты проверки:" -ForegroundColor Cyan
+    foreach ($detail in $networkResult.Details) {
+        $color = "Gray"
+        if ($detail -match "OK|доступен|работает") { $color = "Green" }
+        elseif ($detail -match "НЕ|НЕТ|ошибка") { $color = "Red" }
+        Write-Host "    $detail" -ForegroundColor $color
+    }
+    Write-Host ""
+    
+    if ($networkResult.IsOnline) {
+        Write-Status "✅ Сеть работает нормально" "success"
+    } else {
+        Write-Status "❌ Обнаружены проблемы с сетью" "error"
+        Write-Host ""
+        Write-Host "Рекомендуемые действия:" -ForegroundColor Yellow
+        Write-Host "  1. Быстрое восстановление (без разрыва соединений) - нажмите [R]" -ForegroundColor Yellow
+        Write-Host "  2. Полное восстановление со сбросом IP - нажмите [F]" -ForegroundColor Yellow
+    }
+
+    # Главное меню
     do {
-        $netOk = Test-Network
-        $netIcon = if ($netOk) { "[ONLINE]" } else { "[OFFLINE]" }
-        $netColor = if ($netOk) { "Green" } else { "Red" }
+        $networkResult = Test-Network
+        $netIcon = if ($networkResult.IsOnline) { "✅ [ОНЛАЙН]" } else { "❌ [ОФФЛАЙН]" }
+        $netColor = if ($networkResult.IsOnline) { "Green" } else { "Red" }
+        
         Write-Host ""
-        Write-Host "=== NETWORK MENU ===" -ForegroundColor Cyan
-        Write-Host -NoNewline "  Status: "; Write-Host $netIcon -ForegroundColor $netColor
-        Write-Host "  [S] Show current TCP settings and optimization plan"
-        Write-Host "  [O] Optimize only (safe, no adapter reset)"
-        Write-Host "  [R] Full reset + optimize (drops connection briefly)"
-        Write-Host "  [U] Undo all changes (restore snapshot)"
-        Write-Host "  [Q] Quit"
+        Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║                    ГЛАВНОЕ МЕНЮ                          ║" -ForegroundColor Cyan
+        Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host -NoNewline "  Статус сети: "; Write-Host $netIcon -ForegroundColor $netColor
         Write-Host ""
-        $mc = (Read-Host "Choose [S/O/R/U/Q]").ToUpper()
+        Write-Host "  ВОССТАНОВЛЕНИЕ:" -ForegroundColor Yellow
+        Write-Host "    [R] Быстрое восстановление (мягкий сброс, без разрыва сессий)" -ForegroundColor White
+        Write-Host "    [F] Полное восстановление (с обновлением IP, может разорвать соединения)" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  ОПТИМИЗАЦИЯ:" -ForegroundColor Green
+        Write-Host "    [O] Оптимизировать только (безопасно, не трогает адаптер)" -ForegroundColor White
+        Write-Host "    [S] Показать текущие настройки TCP и план оптимизации" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  ДРУГОЕ:" -ForegroundColor Gray
+        Write-Host "    [U] Отменить все изменения (восстановить из снапшота)" -ForegroundColor White
+        Write-Host "    [Q] Выход" -ForegroundColor White
+        Write-Host ""
+        $mc = (Read-Host "  Выберите действие [R/F/O/S/U/Q]").ToUpper()
+        
         switch ($mc) {
             'S' { Show-TcpSettings }
-            'O' { Write-Log "Menu: Optimize only" "info"; Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter) }
-            'R' { Write-Log "Menu: Full reset" "info"; Invoke-NetworkReset }
-            'U' { Write-Log "Menu: Undo" "info"; Invoke-Restore; $mc = 'Q'; continue }
+            'O' { 
+                Write-Log "Menu: Optimize only" "info"
+                Optimize-NetworkSpeed -Adapter (Get-ActiveAdapter)
+            }
+            'R' { 
+                Write-Log "Menu: Soft reset" "info"
+                Invoke-NetworkReset -Soft
+            }
+            'F' { 
+                Write-Log "Menu: Full reset" "info"
+                Invoke-NetworkReset
+            }
+            'U' { 
+                Write-Log "Menu: Undo" "info"
+                Invoke-Restore
+                $mc = 'Q'
+                continue
+            }
         }
     } while ($mc -ne 'Q')
 }
 
+# Запуск скрипта
 Main

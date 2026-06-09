@@ -1,3 +1,26 @@
+```
+# PowerShell specific ignores
+*.psd1
+*.psm1
+*.psc1
+*.pssc
+*.psrc
+
+# Logs and temp files
 *.log
-network-profile.json
-reset-snapshot.json
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```

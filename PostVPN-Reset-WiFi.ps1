@@ -342,14 +342,12 @@ function Save-Snapshot {
             $ifIdx = (Get-NetAdapter -Name $Adapter -ErrorAction SilentlyContinue).ifIndex
             if ($ifIdx) { $dns = Get-DnsClientServerAddress -InterfaceIndex $ifIdx -AddressFamily IPv4 -ErrorAction SilentlyContinue; if ($dns -and $dns.ServerAddresses) { $snap.DnsServers = $dns.ServerAddresses -join ',' } }
         } catch { Write-Log "DNS capture failed: $_" "warning" }
-    # Save current WiFi SSID (locale-independent) for reconnect after reset.
-    if ($Adapter) {
+        # Save current WiFi SSID (locale-independent) for reconnect after reset.
         try {
             $profile = Get-NetConnectionProfile -InterfaceAlias $Adapter -ErrorAction SilentlyContinue |
                 Where-Object { $_.IPv4Connectivity -eq 'Internet' } | Select-Object -First 1
             if ($profile) { $snap.SavedSsid = $profile.Name }
         } catch {}
-    }
     }
     $tmpPath = $snapPath + '.tmp'
     try {
@@ -445,10 +443,17 @@ function Invoke-TcpStep {
     )
     Write-Host "  [$Index] $($Title): $Before -> $Expected" -ForegroundColor Gray
     try {
-        & $Apply
+        $global:LASTEXITCODE = 0
+        $null = & $Apply
+        $exitCode = $global:LASTEXITCODE
         $after = & $Verify
-        if ("$after" -eq "$Expected") { Write-Status "  $($Title): $Before -> $after" "success" }
-        else { Write-Status "  $($Title): failed (current: $after)" "warning" }
+        if ("$after" -eq "$Expected") {
+            Write-Status "  $($Title): $Before -> $after" "success"
+        } else {
+            $reason = if ($exitCode -ne 0) { "netsh exit code $exitCode" } else { "current: $after" }
+            Write-Status "  $($Title): failed ($reason)" "warning"
+            Write-Log "$Title step failed: $reason (expected=$Expected)" "warning"
+        }
     } catch { Write-Log "$Title step failed: $_" "warning"; Write-Status "  $($Title): exception - $_" "warning" }
 }
 
@@ -473,7 +478,7 @@ function Optimize-NetworkSpeed {
     $validProviders = @('cubic','ctcp','newreno','compoundtcp','dctcp','bbr2','default')
     $providerStr = if ($validProviders -contains "$provider".ToLower()) { $provider } else { 'cubic' }
     Invoke-TcpStep -Index '1/9' -Title 'CongestionProvider' `
-        -Apply  { netsh int tcp set supplemental template=internet congestionprovider=$providerStr 2>&1 | Out-Null } `
+        -Apply  { netsh int tcp set supplemental template=internet congestionprovider=$providerStr 2>&1 } `
         -Verify { (Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue).CongestionProvider } `
         -Expected $providerStr `
         -Before "$(if($gBefore.CongestionProvider){$gBefore.CongestionProvider}else{'default'})"
@@ -481,7 +486,7 @@ function Optimize-NetworkSpeed {
     # [2/9] Timestamps
     $ts = if ($comp.DisableTimestamps) { 'disabled' } else { 'enabled' }
     Invoke-TcpStep -Index '2/9' -Title 'Timestamps' `
-        -Apply  { netsh int tcp set global timestamps=$ts 2>&1 | Out-Null } `
+        -Apply  { netsh int tcp set global timestamps=$ts 2>&1 } `
         -Verify { $t = (Get-NetTCPSetting -SettingName Internet).Timestamps; if ("$t" -match 'Enabled|True|1') {'enabled'} else {'disabled'} } `
         -Expected $ts `
         -Before "$(if($gBefore.Timestamps){$gBefore.Timestamps}else{'(default)'})"
@@ -489,7 +494,7 @@ function Optimize-NetworkSpeed {
     # [3/9] Initial RTO
     $rtoBefore = if ($gBefore.InitialRto) { "$($gBefore.InitialRto)ms" } else { '(default)' }
     Invoke-TcpStep -Index '3/9' -Title 'Initial RTO' `
-        -Apply  { netsh int tcp set global initialRto=$($comp.InitialRto) 2>&1 | Out-Null } `
+        -Apply  { netsh int tcp set global initialRto=$($comp.InitialRto) 2>&1 } `
         -Verify { (Get-TcpGlobals).InitialRto } `
         -Expected "$($comp.InitialRto)" `
         -Before $rtoBefore
@@ -502,7 +507,7 @@ function Optimize-NetworkSpeed {
     }
     if ($rssSupported) {
         Invoke-TcpStep -Index '4/9' -Title 'RSS' `
-            -Apply  { netsh int tcp set global rss=enabled 2>&1 | Out-Null } `
+            -Apply  { netsh int tcp set global rss=enabled 2>&1 } `
             -Verify { (Get-TcpGlobals).Rss } `
             -Expected 'enabled' `
             -Before $rssBefore
@@ -530,8 +535,8 @@ function Optimize-NetworkSpeed {
     $portBefore = if ($dpBefore.V4.Start) { "$($dpBefore.V4.Start)-$($dpBefore.V4.Start + $dpBefore.V4.Num - 1)" } else { '(default)' }
     Invoke-TcpStep -Index '5/9' -Title 'Port range' `
         -Apply  {
-            netsh int ipv4 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
-            netsh int ipv6 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1 | Out-Null
+            netsh int ipv4 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1
+            netsh int ipv6 set dynamicport tcp start=$($comp.PortRangeStart) num=$($comp.PortRangeCount) 2>&1
         } `
         -Verify { $d = Get-DynamicPorts; if ($d.V4.Start) { "$($d.V4.Start)" } else { '' } } `
         -Expected "$($comp.PortRangeStart)" `
@@ -558,7 +563,7 @@ function Optimize-NetworkSpeed {
 
     # [8/9] Auto-tuning level
     Invoke-TcpStep -Index '8/9' -Title 'Auto-tuning' `
-        -Apply  { netsh int tcp set global autotuninglevel=$($comp.AutotuningLevel) 2>&1 | Out-Null } `
+        -Apply  { netsh int tcp set global autotuninglevel=$($comp.AutotuningLevel) 2>&1 } `
         -Verify { (Get-NetTCPSetting -SettingName Internet).AutoTuningLevelLocal } `
         -Expected $comp.AutotuningLevel `
         -Before "$(if($gBefore.AutotuningLevel){$gBefore.AutotuningLevel}else{'(default)'})"

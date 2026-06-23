@@ -1,5 +1,26 @@
 # Changelog
 
+## v5.1 — 2026-06-23
+
+Safety + polish pass: auto-rollback, locale-independent WiFi, cleaner code.
+
+### Added
+- **Post-optimization connectivity check + auto-rollback** — after every optimization run, waits 5s then tests internet. If broken, automatically calls `Invoke-Restore` to revert changes. User is never left without network.
+- `Optimize-NetworkSpeed` now returns `$true`/`$false` (applied / rolled back) so callers can report the outcome.
+- `Invoke-NetworkReset` and `Invoke-SmartMode` handle the new return value and show whether optimizations stuck or were rolled back.
+
+### Changed
+- WiFi reconnect: replaced broken `netsh wlan` (mojibake on non-English locales) with `Get-NetConnectionProfile` (CIM API, locale-independent). SSID saved to snapshot for reconnect after reset.
+- `Check-Admin`: uses `throw` instead of `exit 1` (works correctly when dot-sourced or called from other scripts).
+- `Save-Snapshot`: backs up existing snapshot instead of refusing (last run may have left unapplied changes).
+- Profile cache TTL: 30d → 7d (laptops change networks frequently).
+- `Invoke-Restore`: broken into readable per-step blocks instead of one monolithic block.
+- Menu `[U]`: does not force-quit after undo — returns to menu so user can verify connectivity.
+
+### Removed
+- `Get-TcpValue` (dead code — never called, netsh mojibake on non-English).
+- `AdapterTimeout` parameter (unused).
+
 ## v5.0 — 2026-05-27
 
 Major rewrite: adaptive optimization, snapshot/restore, interactive menu.

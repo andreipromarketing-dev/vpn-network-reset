@@ -11,6 +11,10 @@ Run the script (as Administrator). It detects your system hardware once, caches 
 
 After auto-action, an interactive menu stays open for manual control.
 
+### Safety: auto-rollback
+
+After every optimization run, the script waits 5 seconds and tests internet connectivity. If the optimization broke your connection, it automatically reverts all changes — you are never left without network.
+
 ## Usage
 
 ### Desktop (one shortcut)
@@ -33,10 +37,11 @@ PostVPN-Reset-WiFi.ps1
 After auto-detect and auto-action:
 
 ```
-  [F] Force reset -- polnyj sbros + optimizacia
-  [O] Re-run optimization -- zapustit optimizaciu snova
-  [R] Restore -- otkatit vse izmenenia iz snapshota
-  [Q] Quit -- vyjti
+  [S] Show current TCP settings and optimization plan
+  [O] Optimize only (safe, no adapter reset)
+  [R] Full reset + optimize (drops connection briefly)
+  [U] Undo all changes (restore snapshot)
+  [Q] Quit
 ```
 
 ## What it does
@@ -67,8 +72,11 @@ Before any modification, saves current state to `reset-snapshot.json`:
 - netsh TCP globals (CTCP, timestamps, RSS, initialRTO, autotuning)
 - Dynamic port ranges (IPv4 + IPv6)
 - DNS server addresses
+- Current WiFi SSID (for reconnect after reset)
 
-Use `-Restore` or menu option `[R]` to undo all changes.
+If a snapshot already exists from a previous run, it is backed up with a timestamp instead of being discarded.
+
+Use `-Restore` or menu option `[U]` to undo all changes.
 
 ## Files
 
